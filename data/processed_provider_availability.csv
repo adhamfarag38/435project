@@ -1,0 +1,231 @@
+Provider,Day,Week,Available,AssignedRoom
+HPW101,Monday,Week1,1,Room 15
+HPW101,Tuesday,Week1,0,
+HPW101,Wednesday,Week1,0,
+HPW101,Thursday,Week1,0,
+HPW101,Friday,Week1,1,RM 5 (AM)
+HPW102,Monday,Week1,0,
+HPW102,Tuesday,Week1,0,
+HPW102,Wednesday,Week1,1,Room 6
+HPW102,Thursday,Week1,1,Room 6
+HPW102,Friday,Week1,0,
+HPW103,Monday,Week1,1,Room 5
+HPW103,Tuesday,Week1,0,
+HPW103,Wednesday,Week1,1,Room 5
+HPW103,Thursday,Week1,1,Room 5
+HPW103,Friday,Week1,1,Room 5 (PM)
+HPW104,Monday,Week1,1,Room 14
+HPW104,Tuesday,Week1,0,
+HPW104,Wednesday,Week1,1,Room 14
+HPW104,Thursday,Week1,1,Room 14
+HPW104,Friday,Week1,1,Room 14
+HPW105,Monday,Week1,0,
+HPW105,Tuesday,Week1,0,
+HPW105,Wednesday,Week1,1,Room 12
+HPW105,Thursday,Week1,1,Room 12
+HPW105,Friday,Week1,1,Room 12
+HPW106,Monday,Week1,0,
+HPW106,Tuesday,Week1,0,
+HPW106,Wednesday,Week1,1,Room 10
+HPW106,Thursday,Week1,1,Room 10
+HPW106,Friday,Week1,0,
+HPW107,Monday,Week1,1,Room 4
+HPW107,Tuesday,Week1,0,
+HPW107,Wednesday,Week1,1,Room 7
+HPW107,Thursday,Week1,0,
+HPW107,Friday,Week1,1,Room 7
+HPW108,Monday,Week1,0,
+HPW108,Tuesday,Week1,0,
+HPW108,Wednesday,Week1,1,Room 1
+HPW108,Thursday,Week1,1,Room 1
+HPW108,Friday,Week1,0,
+HPW109,Monday,Week1,0,
+HPW109,Tuesday,Week1,0,
+HPW109,Wednesday,Week1,1,Room 12
+HPW109,Thursday,Week1,1,Room 16
+HPW109,Friday,Week1,0,
+HPW110,Monday,Week1,1,Room 13
+HPW110,Tuesday,Week1,0,
+HPW110,Wednesday,Week1,1,Room 13
+HPW110,Thursday,Week1,1,Room 13
+HPW110,Friday,Week1,0,
+HPW111,Monday,Week1,1,Room 9
+HPW111,Tuesday,Week1,0,
+HPW111,Wednesday,Week1,1,Room 9
+HPW111,Thursday,Week1,1,Room 9
+HPW111,Friday,Week1,1,Room 9
+HPW112,Monday,Week1,1,Room 7
+HPW112,Tuesday,Week1,0,
+HPW112,Wednesday,Week1,0,
+HPW112,Thursday,Week1,1,Room 7
+HPW112,Friday,Week1,0,
+HPW113,Monday,Week1,1,Room 2
+HPW113,Tuesday,Week1,0,
+HPW113,Wednesday,Week1,1,Room 2
+HPW113,Thursday,Week1,1,Room 2
+HPW113,Friday,Week1,1,Room 2
+HPW114,Monday,Week1,1,Room 12
+HPW114,Tuesday,Week1,0,
+HPW114,Wednesday,Week1,0,
+HPW114,Thursday,Week1,1,Room 12
+HPW114,Friday,Week1,0,
+HPW115,Monday,Week1,1,Room 8
+HPW115,Tuesday,Week1,0,
+HPW115,Wednesday,Week1,1,Room 8
+HPW115,Thursday,Week1,1,Room 8
+HPW115,Friday,Week1,1,Room 8
+HPW116,Monday,Week1,1,Room 10
+HPW116,Tuesday,Week1,0,
+HPW116,Wednesday,Week1,0,
+HPW116,Thursday,Week1,1,Room 15
+HPW116,Friday,Week1,1,Room 12 (AM)
+HPW117,Monday,Week1,0,
+HPW117,Tuesday,Week1,0,
+HPW117,Wednesday,Week1,0,
+HPW117,Thursday,Week1,0,
+HPW117,Friday,Week1,1,Room 13
+HPW118,Monday,Week1,1,Room 11
+HPW118,Tuesday,Week1,0,
+HPW118,Wednesday,Week1,1,Room 11
+HPW118,Thursday,Week1,1,Room 11
+HPW118,Friday,Week1,1,Room 11
+HPW119,Monday,Week1,1,Room 3
+HPW119,Tuesday,Week1,0,
+HPW119,Wednesday,Week1,1,Room 3
+HPW119,Thursday,Week1,1,Room 3
+HPW119,Friday,Week1,1,Room 3
+HPW120,Monday,Week1,1,Room 6
+HPW120,Tuesday,Week1,0,
+HPW120,Wednesday,Week1,0,
+HPW120,Thursday,Week1,0,
+HPW120,Friday,Week1,1,Room 6
+,Monday,Week1,0,
+,Tuesday,Week1,0,
+,Wednesday,Week1,0,
+,Thursday,Week1,0,
+,Friday,Week1,0,
+HPW201,Monday,Week2,1,Room 15
+HPW201,Tuesday,Week2,0,
+HPW201,Wednesday,Week2,0,
+HPW201,Thursday,Week2,0,
+HPW201,Friday,Week2,1,RM 5 (AM)
+HPW202,Monday,Week2,0,
+HPW202,Tuesday,Week2,1,Room 10
+HPW202,Wednesday,Week2,0,
+HPW202,Thursday,Week2,0,
+HPW202,Friday,Week2,0,
+HPW203,Monday,Week2,0,
+HPW203,Tuesday,Week2,0,
+HPW203,Wednesday,Week2,1,Room 12
+HPW203,Thursday,Week2,0,
+HPW203,Friday,Week2,1,Room 12
+HPW204,Monday,Week2,0,
+HPW204,Tuesday,Week2,1,Room 15
+HPW204,Wednesday,Week2,1,Room 15
+HPW204,Thursday,Week2,0,
+HPW204,Friday,Week2,0,
+HPW205,Monday,Week2,1,Room 5
+HPW205,Tuesday,Week2,1,Room 5
+HPW205,Wednesday,Week2,1,Room 5
+HPW205,Thursday,Week2,1,Room 5
+HPW205,Friday,Week2,1,Room 5 (PM)
+HPW206,Monday,Week2,1,Room 14
+HPW206,Tuesday,Week2,1,Room 14
+HPW206,Wednesday,Week2,1,Room 14
+HPW206,Thursday,Week2,1,Room 14
+HPW206,Friday,Week2,1,Room 14
+HPW207,Monday,Week2,1,Room 4
+HPW207,Tuesday,Week2,1,Room 4
+HPW207,Wednesday,Week2,1,Room 4
+HPW207,Thursday,Week2,1,Room 4
+HPW207,Friday,Week2,1,Room 4
+HPW208,Monday,Week2,1,Room 13
+HPW208,Tuesday,Week2,0,
+HPW208,Wednesday,Week2,1,Room 13
+HPW208,Thursday,Week2,0,
+HPW208,Friday,Week2,1,Room 13
+HPW209,Monday,Week2,0,
+HPW209,Tuesday,Week2,0,
+HPW209,Wednesday,Week2,1,Room 1
+HPW209,Thursday,Week2,1,Room 1
+HPW209,Friday,Week2,1,Room 1
+HPW210,Monday,Week2,0,
+HPW210,Tuesday,Week2,1,Room 11 (AM) /
+HPW210,Wednesday,Week2,1,Room 6
+HPW210,Thursday,Week2,0,
+HPW210,Friday,Week2,0,
+,Monday,Week2,0,
+,Tuesday,Week2,1,Room 6 (PM)
+,Wednesday,Week2,0,
+,Thursday,Week2,0,
+,Friday,Week2,0,
+HPW211,Monday,Week2,0,
+HPW211,Tuesday,Week2,0,
+HPW211,Wednesday,Week2,1,Room 9
+HPW211,Thursday,Week2,0,
+HPW211,Friday,Week2,0,
+HPW212,Monday,Week2,1,Room 16 (PM)
+HPW212,Tuesday,Week2,1,Room 16
+HPW212,Wednesday,Week2,0,
+HPW212,Thursday,Week2,1,Room 16 (AM)
+HPW212,Friday,Week2,1,Room 16
+HPW213,Monday,Week2,1,Room 9
+HPW213,Tuesday,Week2,1,Room 9
+HPW213,Wednesday,Week2,0,
+HPW213,Thursday,Week2,0,
+HPW213,Friday,Week2,0,
+HPW214,Monday,Week2,1,Room 7
+HPW214,Tuesday,Week2,1,Room 1
+HPW214,Wednesday,Week2,0,
+HPW214,Thursday,Week2,1,Room 9
+HPW214,Friday,Week2,0,
+HPW215,Monday,Week2,0,
+HPW215,Tuesday,Week2,0,
+HPW215,Wednesday,Week2,0,
+HPW215,Thursday,Week2,0,
+HPW215,Friday,Week2,1,Room 10
+HPW216,Monday,Week2,1,Room 2 
+HPW216,Tuesday,Week2,1,Room 2 
+HPW216,Wednesday,Week2,1,Room 2 
+HPW216,Thursday,Week2,1,Room 2 
+HPW216,Friday,Week2,0,
+HPW217,Monday,Week2,1,Room 12
+HPW217,Tuesday,Week2,1,Room 12
+HPW217,Wednesday,Week2,0,
+HPW217,Thursday,Week2,1,Room 12
+HPW217,Friday,Week2,0,
+HPW218,Monday,Week2,1,Room 8
+HPW218,Tuesday,Week2,1,Room 8
+HPW218,Wednesday,Week2,1,Room 8
+HPW218,Thursday,Week2,1,Room 8
+HPW218,Friday,Week2,1,Room 8
+HPW219,Monday,Week2,1,Room 10
+HPW219,Tuesday,Week2,1,Room 7
+HPW219,Wednesday,Week2,0,
+HPW219,Thursday,Week2,1,Room 10
+HPW219,Friday,Week2,1,Room 9 (AM)
+HPW220,Monday,Week2,0,
+HPW220,Tuesday,Week2,1,Room 13
+HPW220,Wednesday,Week2,0,
+HPW220,Thursday,Week2,0,
+HPW220,Friday,Week2,1,Room 7
+HPW221,Monday,Week2,1,Room 11
+HPW221,Tuesday,Week2,1,Room 11
+HPW221,Wednesday,Week2,1,Room 11
+HPW221,Thursday,Week2,1,Room 11
+HPW221,Friday,Week2,1,Room 11
+HPW222,Monday,Week2,1,Room 3
+HPW222,Tuesday,Week2,1,Room 3
+HPW222,Wednesday,Week2,1,Room 3
+HPW222,Thursday,Week2,1,Room 3
+HPW222,Friday,Week2,1,Room 3
+HPW223,Monday,Week2,1,Room 6
+HPW223,Tuesday,Week2,1,Room 6
+HPW223,Wednesday,Week2,0,
+HPW223,Thursday,Week2,0,
+HPW223,Friday,Week2,1,Room 6
+,Monday,Week2,0,
+,Tuesday,Week2,0,
+,Wednesday,Week2,0,
+,Thursday,Week2,0,
+,Friday,Week2,0,

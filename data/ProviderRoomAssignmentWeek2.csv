@@ -1,0 +1,26 @@
+﻿Primary Provider,Provider Type,Monday,Tuesday,Wednesday,Thursday,Friday
+HPW201,NURSE,Room 15,NO ROOM AVAILABLE,,N/A,RM 5 (AM)
+HPW202,ALLIED HEALTH,N/A,Room 10,N/A,N/A,N/A
+HPW203,PROVIDER,N/A,NO ROOM AVAILABLE,Room 12,N/A,Room 12
+HPW204,PROVIDER,N/A,Room 15,Room 15,N/A,N/A
+HPW205,PROVIDER,Room 5,Room 5,Room 5,Room 5,Room 5 (PM)
+HPW206,NURSE,Room 14,Room 14,Room 14,Room 14,Room 14
+HPW207,PROVIDER,Room 4,Room 4,Room 4,Room 4,Room 4
+HPW208,NURSE,Room 13,N/A,Room 13,N/A,Room 13
+HPW209,PROVIDER,N/A,N/A,Room 1,Room 1,Room 1
+HPW210,PROVIDER,N/A,Room 11 (AM) /,Room 6,N/A,N/A
+,,,Room 6 (PM),,,
+HPW211,NURSE,N/A,N/A,Room 9,N/A,N/A
+HPW212,PROVIDER,Room 16 (PM),Room 16,N/A,Room 16 (AM),Room 16
+HPW213,PROVIDER,Room 9,Room 9,N/A,N/A,N/A
+HPW214,NURSE,Room 7,Room 1,N/A,Room 9,N/A
+HPW215,PROVIDER,N/A,N/A,N/A,N/A,Room 10
+HPW216,PROVIDER,Room 2 ,Room 2 ,Room 2 ,Room 2 ,N/A
+HPW217,PROVIDER,Room 12,Room 12,N/A,Room 12,N/A
+HPW218,NURSE,Room 8,Room 8,Room 8,Room 8,Room 8
+HPW219,RESIDENT/STUDENT,Room 10,Room 7,N/A,Room 10,Room 9 (AM)
+HPW220,NURSE,N/A,Room 13,N/A,N/A,Room 7
+HPW221,PROVIDER,Room 11,Room 11,Room 11,Room 11,Room 11
+HPW222,PROVIDER,Room 3,Room 3,Room 3,Room 3,Room 3
+HPW223,PROVIDER,Room 6,Room 6,N/A,N/A,Room 6
+,,,,,,
