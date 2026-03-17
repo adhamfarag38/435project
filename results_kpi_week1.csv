@@ -1,0 +1,5 @@
+Policy,Coverage (%),Avg Switches/Provider-Day,Total Travel (m),Room Utilisation (%),Appointments Scheduled,Total Appointments
+A: Single Room,85.7,0.0,0.0,21.5,366,427
+B: Cluster,96.5,0.81,50.7,22.3,412,427
+C: Robust Buffer,84.1,2.81,134.5,18.9,359,427
+D: No-show Robust,91.1,1.48,54.8,20.9,389,427
