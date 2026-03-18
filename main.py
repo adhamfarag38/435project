@@ -295,23 +295,193 @@ def run_full_pipeline(
     return policy_results, kpi_df
 
 
+# ─── Advanced Pipeline: CG → LR → TS ────────────────────────────────────────
+
+def run_advanced_pipeline(
+    week: int = 1,
+    delta_frac: float = 0.0,
+    proximity_threshold: float = 4.0,
+    cg_max_iter: int = 30,
+    lr_max_iter: int = 150,
+    ts_max_iter: int = 300,
+    ts_k_max: int = 20,
+    verbose: bool = False,
+    save_results: bool = True,
+):
+    """
+    Advanced optimisation pipeline combining three course methods:
+
+      1. COLUMN GENERATION (Dantzig-Wolfe decomposition)
+         ─ Iteratively adds schedules with negative reduced cost to the master pool.
+         ─ LP relaxation → dual prices → pricing subproblem (Model 2) → add column.
+         ─ Produces: LP lower bound (z_LP), ILP upper bound (z_ILP).
+
+      2. LAGRANGIAN RELAXATION  (Subgradient method)
+         ─ Relaxes appointment-coverage constraints with multipliers u_a ≥ 0.
+         ─ Updates u via subgradient ascent with Polyak step size.
+         ─ Produces: Lagrangian lower bound z_LR ≤ z*.
+
+      3. TABU SEARCH  (Post-optimisation metaheuristic)
+         ─ Starts from the CG ILP solution and explores single-swap neighbourhood.
+         ─ Maintains a FIFO tabu list to prevent cycling; aspiration criterion
+           overrides tabu when a global improvement is found.
+         ─ Produces: improved upper bound z_TS ≤ z_ILP.
+
+      BOUNDS REPORTED
+      ───────────────
+        z_LR  ≤  z_LP  ≤  z*  ≤  z_TS  ≤  z_ILP
+
+        Duality gap = (z_TS − z_LR) / z_TS × 100 %
+
+      B&B / B&C NOTE
+      ──────────────
+      The ILP solves in steps 1 and the LR subproblems all use CBC, which
+      internally applies Branch-and-Bound (B&B) with Gomory cutting planes
+      (Branch-and-Cut).  The LP relaxation bound computed in step 1 IS the
+      B&B root-node LP relaxation bound — it lower-bounds every node in the
+      B&B tree.  The gap between this LP bound and the ILP solution measures
+      how much B&C tightening was required.
+    """
+    from column_generation import run_column_generation
+    from lagrangian        import run_lagrangian_relaxation
+    from tabu_search       import run_tabu_search
+    from model3            import master_to_appointments
+
+    print("\n" + "█" * 62)
+    print(f"  ADVANCED PIPELINE — Week {week}")
+    print("█" * 62)
+
+    # ── Load data ──────────────────────────────────────────────────────────────
+    print("\n[0] Loading data...")
+    appts_all  = load_all_appointments()
+    avail_all  = load_all_provider_availability()
+    dist_matrix = load_distance_matrix()
+
+    appts = appts_all[appts_all["week"] == week].copy()
+    avail = avail_all[avail_all["week"] == week].copy()
+    print(f"    Appointments: {len(appts)}, "
+          f"Providers: {appts['provider'].nunique()}, "
+          f"Days: {appts['day_of_week'].nunique()}")
+
+    # ── Step 1: Column Generation ──────────────────────────────────────────────
+    cg = run_column_generation(
+        appts, avail, dist_matrix,
+        delta_frac=delta_frac,
+        proximity_threshold=proximity_threshold,
+        max_iterations=cg_max_iter,
+        verbose=verbose,
+    )
+    z_lp  = cg["lp_bound"]
+    z_ilp = cg["ilp_bound"]
+
+    # ── Step 2: Lagrangian Relaxation ──────────────────────────────────────────
+    lr = run_lagrangian_relaxation(
+        cg["schedules"], appts,
+        z_ub=z_ilp,
+        max_iterations=lr_max_iter,
+        verbose=verbose,
+    )
+    z_lr = lr["best_lower_bound"]
+
+    # ── Step 3: Tabu Search ────────────────────────────────────────────────────
+    selected_scheds = cg["master_result"].get("selected_schedules", [])
+    if not selected_scheds:
+        print("[Advanced] No feasible ILP solution to improve — skipping TS.")
+        ts = None
+        z_ts = z_ilp
+    else:
+        ts = run_tabu_search(
+            selected_scheds, appts, avail, dist_matrix,
+            proximity_threshold=proximity_threshold,
+            k_max=ts_k_max,
+            max_iterations=ts_max_iter,
+            verbose=verbose,
+        )
+        z_ts = ts["best_cost"]
+
+    # ── Bound Summary ─────────────────────────────────────────────────────────
+    gap_pct = (z_ts - z_lr) / abs(z_ts) * 100 if z_ts not in (0, float("inf")) else None
+
+    print("\n" + "█" * 62)
+    print("  FINAL BOUNDS SUMMARY")
+    print("█" * 62)
+    print(f"\n  Method                        Bound")
+    print(f"  {'─'*50}")
+    if z_lr is not None:
+        print(f"  Lagrangian lower bound z_LR : {z_lr:>12.4f}  (≤ optimal)")
+    if z_lp is not None:
+        print(f"  LP relaxation bound    z_LP : {z_lp:>12.4f}  (≤ optimal, B&B root)")
+    print(f"  CG ILP solution        z_ILP: {z_ilp:>12.4f}  (feasible solution)")
+    print(f"  Tabu Search solution   z_TS : {z_ts:>12.4f}  (improved feasible)")
+    if gap_pct is not None:
+        print(f"\n  Duality gap (z_TS − z_LR)/z_TS : {gap_pct:.2f}%")
+        if gap_pct < 5:
+            print("  → Gap < 5%: solution is near-optimal.")
+        elif gap_pct < 15:
+            print("  → Gap < 15%: solution is good quality.")
+        else:
+            print("  → Gap > 15%: more CG/LR iterations may help.")
+    print(f"\n  B&B note: the ILP solves used CBC (Branch-and-Cut internally).")
+    print(f"  LP bound {z_lp:.4f} is the B&B root-node relaxation bound.")
+    print(f"  B&C tightening: {abs(z_ilp - z_lp):.4f} above LP bound.")
+    print("█" * 62 + "\n")
+
+    # ── Save Results ───────────────────────────────────────────────────────────
+    if save_results:
+        if ts is not None:
+            ts["best_df"].to_csv(f"results_advanced_week{week}.csv", index=False)
+        lr["history"].to_csv(f"lr_history_week{week}.csv", index=False)
+        if ts is not None:
+            ts["history"].to_csv(f"ts_history_week{week}.csv", index=False)
+
+        bounds_df = pd.DataFrame([{
+            "z_LR (Lagrangian LB)":  z_lr,
+            "z_LP (CG LP bound)":    z_lp,
+            "z_ILP (CG ILP)":        z_ilp,
+            "z_TS (Tabu Search)":    z_ts,
+            "Duality Gap (%)":       gap_pct,
+        }])
+        bounds_df.to_csv(f"bounds_summary_week{week}.csv", index=False)
+        print(f"Results saved: results_advanced_week{week}.csv, "
+              f"lr_history_week{week}.csv, ts_history_week{week}.csv, "
+              f"bounds_summary_week{week}.csv")
+
+    return {
+        "z_lp":         z_lp,
+        "z_ilp":        z_ilp,
+        "z_lr":         z_lr,
+        "z_ts":         z_ts,
+        "gap_pct":      gap_pct,
+        "cg_result":    cg,
+        "lr_result":    lr,
+        "ts_result":    ts,
+    }
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Exam Room Scheduling Optimizer")
-    parser.add_argument("--week", type=int, default=1, choices=[1, 2],
-                        help="Week to solve (1 or 2)")
-    parser.add_argument("--policy", nargs="+",
+    parser.add_argument("--week",     type=int,  default=1, choices=[1, 2])
+    parser.add_argument("--mode",     type=str,  default="advanced",
+                        choices=["basic", "advanced"],
+                        help="basic = policy comparison; advanced = CG+LR+TS")
+    parser.add_argument("--policy",   nargs="+",
                         choices=list(POLICIES.keys()),
-                        default=list(POLICIES.keys()),
-                        help="Policies to run")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Verbose solver output")
+                        default=list(POLICIES.keys()))
+    parser.add_argument("--verbose",  action="store_true")
     args = parser.parse_args()
 
-    run_full_pipeline(
-        week=args.week,
-        policies_to_run=args.policy,
-        verbose_model2=args.verbose,
-        save_results=True
-    )
+    if args.mode == "advanced":
+        run_advanced_pipeline(
+            week=args.week,
+            verbose=args.verbose,
+            save_results=True,
+        )
+    else:
+        run_full_pipeline(
+            week=args.week,
+            policies_to_run=args.policy,
+            verbose_model2=args.verbose,
+            save_results=True,
+        )
