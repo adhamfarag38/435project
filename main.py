@@ -3,13 +3,13 @@ Main driver: Examination Room Scheduling Optimization Engine
 ────────────────────────────────────────────────────────────────────────────────
 Runs the three-model decomposition framework and compares scheduling policies.
 
-Policies compared:
-  A. Single room per provider per day (baseline)
-  B. Cluster of rooms (within proximity threshold) [column generation]
-  C. Day blocking (skip providers unavailable that day)
-  D. Admin time buffer (stricter overlap detection)
-  E. Overbooking with no-show adjustment
-  F. Robust scheduling with duration uncertainty buffer
+Policies compared (matching course validation framework):
+  A. Single room per provider per day (baseline)         — policy (a)
+  B. Cluster of rooms (within proximity threshold)        — policy (b)
+  C. Robust duration buffer (10% uncertainty)             — policy (f)
+  D. Overbooking with no-show adjustment                  — policy (e)
+  E. Day blocking (skip unavailable provider-days)        — policy (c)
+  F. Admin time buffer (use admin blocks for overruns)    — policy (d)
 """
 
 import pandas as pd
@@ -33,23 +33,33 @@ POLICIES = {
     "A_single_room": {
         "proximity_threshold": 0.0,   # force single room only
         "delta_frac": 0.0,
-        "description": "Single room per provider-day (baseline)",
+        "description": "Single room per provider-day (baseline)",    # policy (a)
     },
     "B_cluster": {
         "proximity_threshold": 4.0,   # rooms within 4m
         "delta_frac": 0.0,
-        "description": "Cluster of rooms (proximity ≤ 4m)",
+        "description": "Cluster of rooms (proximity ≤ 4m)",          # policy (b)
     },
-    "C_admin_buffer": {
+    "C_robust_buffer": {
         "proximity_threshold": 4.0,
-        "delta_frac": 0.10,           # 10% duration buffer
-        "description": "Cluster + 10% duration uncertainty buffer",
+        "delta_frac": 0.10,           # 10% duration uncertainty buffer
+        "description": "Cluster + 10% duration uncertainty buffer",  # policy (f)
     },
     "D_robust_noshow": {
         "proximity_threshold": 4.0,
         "delta_frac": 0.10,
         "noshow_adjust": True,
-        "description": "Robust: cluster + buffer + no-show adjustment",
+        "description": "Robust: cluster + buffer + no-show adjustment",  # policy (e)
+    },
+    "E_day_blocking": {
+        "proximity_threshold": 4.0,
+        "delta_frac": 0.0,
+        "description": "Block unavailable provider-days (respect day-off schedule)",  # policy (c)
+    },
+    "F_admin_buffer": {
+        "proximity_threshold": 4.0,
+        "delta_frac": 0.0,
+        "description": "Admin time used as buffer for appointment overruns",  # policy (d)
     },
 }
 
@@ -103,6 +113,69 @@ def apply_noshow_adjustment(appointments, noshow_rates):
     appts = appointments.copy()
     appts["rho"] = appts["provider"].map(noshow_rates).fillna(appts["no_show"].mean())
     appts["effective_duration"] = (1 - appts["rho"]) * appts["duration_min"]
+    return appts
+
+
+# ─── Policy E: Day-blocking filter ───────────────────────────────────────────
+
+def apply_day_blocking(appointments: pd.DataFrame,
+                        provider_avail: pd.DataFrame) -> pd.DataFrame:
+    """
+    Policy (c): Block certain days for certain healthcare providers.
+
+    Removes appointments for providers who are marked unavailable (no room
+    assignment) on that day in the provider availability schedule.
+    Blocked appointments will appear as unscheduled (null room) in KPIs,
+    correctly reducing coverage for days when providers are not working.
+
+    Returns filtered appointments (subset of input).
+    """
+    avail_lookup = {
+        (row["provider"], row["day"], row["week"]): row["available"]
+        for _, row in provider_avail.iterrows()
+    }
+    mask = appointments.apply(
+        lambda r: avail_lookup.get((r["provider"], r["day_of_week"], r["week"]), True),
+        axis=1
+    )
+    blocked = (~mask).sum()
+    print(f"     [Day blocking] Removed {blocked} appointments "
+          f"({blocked / len(appointments) * 100:.1f}%) for unavailable providers.")
+    return appointments[mask].copy()
+
+
+# ─── Policy F: Admin time buffer ──────────────────────────────────────────────
+
+def apply_admin_time_buffer(appointments: pd.DataFrame) -> pd.DataFrame:
+    """
+    Policy (d): Use certain admin time for extenuating circumstances.
+
+    Admin blocks (morning huddle, noon prep, lunch, afternoon close) are
+    treated as flexible buffer time that absorbs appointment overruns.
+    Concretely: if an appointment's end_min extends past the START of the
+    next admin block, we clip it to that admin block start.
+
+    Effect: two appointments that technically overlap by a few minutes
+    (one running into admin time) are no longer flagged as conflicting.
+    This allows tighter scheduling and increases room utilisation.
+
+    Returns a copy of appointments with adjusted end_min / duration_min.
+    """
+    from data_loader import ADMIN_BLOCKS
+
+    appts = appointments.copy()
+    clipped = 0
+    for idx, row in appts.iterrows():
+        key = "friday" if row["day_of_week"] == "Friday" else "weekday"
+        for _, (blk_start, blk_end) in ADMIN_BLOCKS[key].items():
+            # Appointment straddles admin block start → clip end at block boundary
+            if row["start_min"] < blk_start < row["end_min"]:
+                appts.at[idx, "end_min"]      = blk_start
+                appts.at[idx, "duration_min"] = blk_start - int(row["start_min"])
+                clipped += 1
+                break   # Only apply the first applicable block
+    print(f"     [Admin buffer] Clipped {clipped} appointments "
+          f"({clipped / len(appts) * 100:.1f}%) at admin block boundaries.")
     return appts
 
 
@@ -224,10 +297,10 @@ def run_full_pipeline(
         print(f"     Master cost: {master_b['total_cost']:.2f}, "
               f"Coverage: {kpi_b['Coverage (%)']}%")
 
-    # ── Policy C: Robust (cluster + duration buffer) ──────────────────────────
-    if "C_admin_buffer" in policies_to_run:
-        print("\n[3C] Policy C — Robust scheduling (10% buffer)...")
-        cfg = POLICIES["C_admin_buffer"]
+    # ── Policy C: Robust duration buffer (policy f) ───────────────────────────
+    if "C_robust_buffer" in policies_to_run:
+        print("\n[3C] Policy C — Robust scheduling (10% duration buffer, policy f)...")
+        cfg = POLICIES["C_robust_buffer"]
         schedules_c = generate_schedules_sequential(
             appts, avail, dist_matrix,
             delta_frac=cfg["delta_frac"],
@@ -236,9 +309,9 @@ def run_full_pipeline(
         )
         master_c = build_master_problem(schedules_c, appts, integer=True, verbose=False)
         res_c = master_to_appointments(master_c, appts)
-        res_c["policy"] = "C_admin_buffer"
-        policy_results["C_admin_buffer"] = res_c
-        kpi_c = compute_kpis(res_c, dist_matrix, "C: Robust Buffer")
+        res_c["policy"] = "C_robust_buffer"
+        policy_results["C_robust_buffer"] = res_c
+        kpi_c = compute_kpis(res_c, dist_matrix, "C: Robust Buffer (f)")
         all_kpis.append(kpi_c)
         print(f"     Master cost: {master_c['total_cost']:.2f}, "
               f"Coverage: {kpi_c['Coverage (%)']}%")
@@ -267,6 +340,48 @@ def run_full_pipeline(
         all_kpis.append(kpi_d)
         print(f"     Master cost: {master_d['total_cost']:.2f}, "
               f"Coverage: {kpi_d['Coverage (%)']}%")
+
+    # ── Policy E: Day blocking (policy c) ────────────────────────────────────
+    if "E_day_blocking" in policies_to_run:
+        print("\n[3E] Policy E — Day blocking (policy c): skip unavailable provider-days...")
+        appts_blocked = apply_day_blocking(appts, avail)
+        cfg = POLICIES["E_day_blocking"]
+        schedules_e = generate_schedules_sequential(
+            appts_blocked, avail, dist_matrix,
+            delta_frac=cfg["delta_frac"],
+            proximity_threshold=cfg["proximity_threshold"],
+            verbose=verbose_model2
+        )
+        master_e = build_master_problem(schedules_e, appts_blocked, integer=True, verbose=False)
+        # Merge back against ORIGINAL appts so blocked appointments appear as unscheduled
+        res_e = master_to_appointments(master_e, appts)
+        res_e["policy"] = "E_day_blocking"
+        policy_results["E_day_blocking"] = res_e
+        kpi_e = compute_kpis(res_e, dist_matrix, "E: Day Blocking (c)")
+        all_kpis.append(kpi_e)
+        print(f"     Master cost: {master_e['total_cost']:.2f}, "
+              f"Coverage: {kpi_e['Coverage (%)']}%")
+
+    # ── Policy F: Admin time buffer (policy d) ────────────────────────────────
+    if "F_admin_buffer" in policies_to_run:
+        print("\n[3F] Policy F — Admin time buffer (policy d): absorb overruns into admin blocks...")
+        appts_admin = apply_admin_time_buffer(appts)
+        cfg = POLICIES["F_admin_buffer"]
+        schedules_f = generate_schedules_sequential(
+            appts_admin, avail, dist_matrix,
+            delta_frac=cfg["delta_frac"],
+            proximity_threshold=cfg["proximity_threshold"],
+            verbose=verbose_model2
+        )
+        master_f = build_master_problem(schedules_f, appts_admin, integer=True, verbose=False)
+        # Merge back against ORIGINAL appts to report actual appointment coverage
+        res_f = master_to_appointments(master_f, appts)
+        res_f["policy"] = "F_admin_buffer"
+        policy_results["F_admin_buffer"] = res_f
+        kpi_f = compute_kpis(res_f, dist_matrix, "F: Admin Buffer (d)")
+        all_kpis.append(kpi_f)
+        print(f"     Master cost: {master_f['total_cost']:.2f}, "
+              f"Coverage: {kpi_f['Coverage (%)']}%")
 
     # ── KPI summary ───────────────────────────────────────────────────────────
     print("\n" + "=" * 60)
@@ -467,7 +582,7 @@ if __name__ == "__main__":
                         choices=["basic", "advanced"],
                         help="basic = policy comparison; advanced = CG+LR+TS")
     parser.add_argument("--policy",   nargs="+",
-                        choices=list(POLICIES.keys()),
+                        choices=list(POLICIES.keys()) + ["C_admin_buffer"],  # legacy alias
                         default=list(POLICIES.keys()))
     parser.add_argument("--verbose",  action="store_true")
     args = parser.parse_args()
