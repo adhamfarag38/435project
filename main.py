@@ -35,6 +35,11 @@ POLICIES = {
         "delta_frac": 0.0,
         "description": "Single room per provider-day (baseline)",    # policy (a)
     },
+    "A_single_room_week": {
+        "proximity_threshold": 0.0,
+        "delta_frac": 0.0,
+        "description": "Single room per provider for entire week",   # policy (4a)
+    },
     "B_cluster": {
         "proximity_threshold": 4.0,   # rooms within 4m
         "delta_frac": 0.0,
@@ -94,6 +99,86 @@ def policy_single_room(appointments, provider_avail, dist_matrix):
 
     if not rows:
         return appointments.copy()
+
+    res_df = pd.DataFrame(rows)
+    return appointments.merge(
+        res_df[["appt_id", "assigned_room", "policy", "num_switches", "total_travel"]],
+        on="appt_id", how="left"
+    )
+
+
+# ─── Policy A-Week: Single room per provider for entire week ─────────────────
+
+def policy_single_room_week(appointments, provider_avail, dist_matrix):
+    """
+    Assign each provider to one fixed room for ALL days of the week.
+
+    The room is chosen as the modal room (most frequent) across all
+    room_am / room_pm entries in provider_avail for that provider and week.
+    Ties are broken by taking the first modal value.
+
+    If the chosen room is occupied at a given time slot by another provider's
+    appointment, that appointment is marked unscheduled (assigned_room = None).
+    No reassignment to other rooms is attempted.
+    """
+    week = appointments["week"].iloc[0]
+
+    # ── Find each provider's modal room for the week ───────────────────────────
+    provider_week_room: dict[str, str | None] = {}
+    for provider, grp in provider_avail[provider_avail["week"] == week].groupby("provider"):
+        all_rooms = []
+        for _, row in grp.iterrows():
+            if row["room_am"]:
+                all_rooms.append(row["room_am"])
+            if row["room_pm"]:
+                all_rooms.append(row["room_pm"])
+        if all_rooms:
+            # Modal room — pd.Series.mode() returns sorted list; take first
+            modal = pd.Series(all_rooms).mode()
+            provider_week_room[provider] = modal.iloc[0] if not modal.empty else None
+        else:
+            provider_week_room[provider] = None
+
+    # ── Build room-occupancy from week-room assignments ────────────────────────
+    # Map each appointment to its provider's weekly room, then detect
+    # cross-provider conflicts using only the originally assigned room.
+    # A room-time slot is "occupied" the moment any appointment claims it.
+    # We iterate in chronological order so earlier appointments win.
+    appts_sorted = appointments.sort_values(["start_min", "appt_id"]).copy()
+    appts_sorted["week_room"] = appts_sorted["provider"].map(provider_week_room)
+
+    # Track (room, minute) occupancy to detect conflicts
+    room_minute_owner: dict[tuple[str, int], int] = {}  # (room, min) → appt_id
+    assigned_room_map: dict[int, str | None] = {}
+
+    for _, appt in appts_sorted.iterrows():
+        room = appt["week_room"]
+        if room is None:
+            assigned_room_map[appt["appt_id"]] = None
+            continue
+
+        # Check whether every minute in [start_min, end_min) is free
+        occupied = any(
+            (room, t) in room_minute_owner
+            for t in range(int(appt["start_min"]), int(appt["end_min"]))
+        )
+        if occupied:
+            assigned_room_map[appt["appt_id"]] = None
+        else:
+            assigned_room_map[appt["appt_id"]] = room
+            for t in range(int(appt["start_min"]), int(appt["end_min"])):
+                room_minute_owner[(room, t)] = appt["appt_id"]
+
+    # ── Build result rows ─────────────────────────────────────────────────────
+    rows = []
+    for _, appt in appointments.iterrows():
+        rows.append({
+            "appt_id":      appt["appt_id"],
+            "assigned_room": assigned_room_map.get(appt["appt_id"]),
+            "policy":        "A_single_room_week",
+            "num_switches":  0,
+            "total_travel":  0.0,
+        })
 
     res_df = pd.DataFrame(rows)
     return appointments.merge(
@@ -277,6 +362,16 @@ def run_full_pipeline(
         kpi_a = compute_kpis(res_a, dist_matrix, "A: Single Room")
         all_kpis.append(kpi_a)
         print(f"     Coverage: {kpi_a['Coverage (%)']}%")
+
+    # ── Policy A-Week: Single room per provider for entire week ──────────────
+    if "A_single_room_week" in policies_to_run:
+        print("\n[3A2] Policy A-Week — Single room for entire week...")
+        res_aw = policy_single_room_week(appts, avail, dist_matrix)
+        res_aw["policy"] = "A_single_room_week"
+        policy_results["A_single_room_week"] = res_aw
+        kpi_aw = compute_kpis(res_aw, dist_matrix, "A: Single Room (week)")
+        all_kpis.append(kpi_aw)
+        print(f"     Coverage: {kpi_aw['Coverage (%)']}%")
 
     # ── Policy B: Cluster-based optimisation (Model 2 → Model 3) ─────────────
     if "B_cluster" in policies_to_run:
@@ -573,6 +668,172 @@ def run_advanced_pipeline(
     }
 
 
+# ─── Policy C capacity analysis ──────────────────────────────────────────────
+
+def analyze_policy_c_capacity(week: int) -> pd.DataFrame:
+    """
+    Quantify why Policy C (robust buffer) loses coverage compared to Policy B.
+
+    Policy C adds a 10% duration buffer (delta_frac=0.10) during conflict
+    detection in Model 2.  This inflates effective appointment lengths so that
+    appointments that fit back-to-back under Policy B look like they overlap
+    under Policy C, crowding out cluster rooms and leaving some appointments
+    unscheduled.
+
+    For each appointment that Policy B schedules but Policy C does not, the
+    function checks whether the ORIGINAL (un-buffered) duration would still
+    conflict with the rooms actually assigned under Policy C, and classifies
+    each lost appointment as:
+
+      "direct_buffer_conflict"  — original duration fits in at least one
+                                  cluster room given Policy C's assignments,
+                                  but the buffered slot does not.  The 10%
+                                  padding itself caused the slot to be blocked.
+
+      "cascade_conflict"        — even the original duration has no free room
+                                  in the cluster given Policy C's assignments.
+                                  Earlier appointments displaced by buffering
+                                  filled all available rooms (cascade effect).
+
+    Saves one row per lost appointment to policy_c_analysis_week{week}.csv.
+
+    Parameters
+    ----------
+    week : 1 or 2
+
+    Returns
+    -------
+    pd.DataFrame with one row per lost appointment.
+    """
+    print("\n" + "=" * 62)
+    print(f"  POLICY C CAPACITY ANALYSIS — Week {week}")
+    print("=" * 62)
+
+    # ── Load data ─────────────────────────────────────────────────────────────
+    appts_all   = load_all_appointments()
+    avail_all   = load_all_provider_availability()
+    dist_matrix = load_distance_matrix()
+
+    appts = appts_all[appts_all["week"] == week].copy()
+    avail = avail_all[avail_all["week"] == week].copy()
+
+    # ── Run Policy B (no buffer) ──────────────────────────────────────────────
+    schedules_b = generate_schedules_sequential(
+        appts, avail, dist_matrix,
+        delta_frac=0.0,
+        proximity_threshold=4.0,
+        verbose=False,
+    )
+    master_b = build_master_problem(schedules_b, appts, integer=True, verbose=False)
+    res_b     = master_to_appointments(master_b, appts)
+
+    # ── Run Policy C (10% buffer) ─────────────────────────────────────────────
+    schedules_c = generate_schedules_sequential(
+        appts, avail, dist_matrix,
+        delta_frac=0.10,
+        proximity_threshold=4.0,
+        verbose=False,
+    )
+    master_c = build_master_problem(schedules_c, appts, integer=True, verbose=False)
+    res_c     = master_to_appointments(master_c, appts)
+
+    # ── Identify lost appointments (B scheduled, C did not) ───────────────────
+    b_scheduled = set(res_b.loc[res_b["assigned_room"].notna(), "appt_id"])
+    c_scheduled = set(res_c.loc[res_c["assigned_room"].notna(), "appt_id"])
+    lost_ids    = b_scheduled - c_scheduled
+
+    # ── Build room-occupancy map from Policy C assignments ────────────────────
+    # For each room, list of (start_min, end_min) for scheduled appointments.
+    # Uses ORIGINAL durations (buffering affects conflict detection only,
+    # not actual room occupancy).
+    room_occupancy: dict[str, list[tuple[int, int]]] = {r: [] for r in ROOMS}
+    c_assigned = res_c[res_c["assigned_room"].notna()]
+    for _, row in c_assigned.iterrows():
+        room = row["assigned_room"]
+        if room in room_occupancy:
+            room_occupancy[room].append((int(row["start_min"]), int(row["end_min"])))
+
+    # ── Classify each lost appointment ────────────────────────────────────────
+    appt_lookup = appts.set_index("appt_id")
+    lost_rows   = []
+
+    for aid in lost_ids:
+        row  = appt_lookup.loc[aid]
+        prov = row["provider"]
+        day  = row["day_of_week"]
+        dur  = int(row["duration_min"])
+        s    = int(row["start_min"])
+
+        orig_end = s + dur
+
+        cluster = get_provider_cluster(
+            prov, day, week, avail, dist_matrix, proximity_threshold=4.0
+        )
+
+        def fits_in_room(room: str, appt_end: int) -> bool:
+            """True if [s, appt_end) does not overlap any occupied slot in room."""
+            for (occ_s, occ_e) in room_occupancy.get(room, []):
+                if s < occ_e and appt_end > occ_s:
+                    return False
+            return True
+
+        orig_fits = any(fits_in_room(r, orig_end) for r in cluster)
+
+        if orig_fits:
+            # Original duration would fit — the 10% buffer is the direct cause
+            reason = "direct_buffer_conflict"
+        else:
+            # Even original duration has no free room — cascade displacement
+            reason = "cascade_conflict"
+
+        extra_min = int(0.10 * dur)
+        lost_rows.append({
+            "appt_id":              aid,
+            "provider":             prov,
+            "day_of_week":          day,
+            "original_duration_min": dur,
+            "buffered_duration_min": dur + extra_min,
+            "extra_minutes":        extra_min,
+            "reason":               reason,
+        })
+
+    lost_df = pd.DataFrame(lost_rows) if lost_rows else pd.DataFrame(
+        columns=["appt_id", "provider", "day_of_week",
+                 "original_duration_min", "buffered_duration_min",
+                 "extra_minutes", "reason"]
+    )
+
+    # ── Aggregate statistics ──────────────────────────────────────────────────
+    total_lost       = len(lost_df)
+    n_direct         = (lost_df["reason"] == "direct_buffer_conflict").sum() if total_lost else 0
+    n_cascade        = (lost_df["reason"] == "cascade_conflict").sum()        if total_lost else 0
+    n_providers      = lost_df["provider"].nunique()                           if total_lost else 0
+
+    total_buffer_min = int((appts["duration_min"] * 0.10).astype(int).sum())
+    avg_buffer_min   = round(appts["duration_min"].apply(lambda d: int(0.10 * d)).mean(), 2)
+
+    print(f"\n  Appointments scheduled by Policy B : {len(b_scheduled)}")
+    print(f"  Appointments scheduled by Policy C : {len(c_scheduled)}")
+    print(f"  Lost appointments (B - C)          : {total_lost}")
+    print(f"\n  Classification of lost appointments:")
+    print(f"    direct_buffer_conflict : {n_direct}"
+          f"  (buffer itself blocked the slot; original duration would fit)")
+    print(f"    cascade_conflict       : {n_cascade}"
+          f"  (even original duration has no free room — cascade displacement)")
+    print(f"\n  Buffer statistics (all {len(appts)} appointments in week {week}):")
+    print(f"    Total extra room-minutes from 10% buffer : {total_buffer_min} min")
+    print(f"    Average buffer added per appointment     : {avg_buffer_min} min")
+    print(f"\n  Distinct providers affected by losses : {n_providers}")
+
+    # ── Save CSV ──────────────────────────────────────────────────────────────
+    out_path = f"policy_c_analysis_week{week}.csv"
+    lost_df.to_csv(out_path, index=False)
+    print(f"\n  Saved: {out_path}  ({len(lost_df)} rows)")
+    print("=" * 62 + "\n")
+
+    return lost_df
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -600,3 +861,6 @@ if __name__ == "__main__":
             verbose_model2=args.verbose,
             save_results=True,
         )
+
+    analyze_policy_c_capacity(1)
+    analyze_policy_c_capacity(2)

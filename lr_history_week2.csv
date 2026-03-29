@@ -1,2 +1,2 @@
-iteration,L_u,best_L,gap_pct,lambda,improved
-1,43350765.4,43350765.4,0.0,2.0,True
+iteration,L_u,best_L,gap_pct,z_master,improved
+1,43000706.1,43000706.1,0.0,43000706.0,True
