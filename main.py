@@ -620,9 +620,9 @@ def run_advanced_pipeline(
     if z_lr is not None:
         print(f"  Lagrangian lower bound z_LR : {z_lr:>12.4f}  (≤ optimal)")
     if z_lp is not None:
-        print(f"  LP relaxation bound    z_LP : {z_lp:>12.4f}  (≤ optimal, B&B root)")
-    print(f"  CG ILP solution        z_ILP: {z_ilp:>12.4f}  (feasible solution)")
-    print(f"  Tabu Search solution   z_TS : {z_ts:>12.4f}  (improved feasible)")
+        print(f"  CG restricted-LP value z_LP : {z_lp:>12.4f}  (restricted-pool UB; NOT a certified lower bound)")
+    print(f"  CG ILP solution        z_ILP: {z_ilp:>12.4f}  (feasible upper bound)")
+    print(f"  Tabu Search solution   z_TS : {z_ts:>12.4f}  (improved feasible upper bound)")
     if gap_pct is not None:
         print(f"\n  Duality gap (z_TS − z_LR)/z_TS : {gap_pct:.2f}%")
         if gap_pct < 5:
@@ -632,8 +632,8 @@ def run_advanced_pipeline(
         else:
             print("  → Gap > 15%: more CG/LR iterations may help.")
     print(f"\n  B&B note: the ILP solves used CBC (Branch-and-Cut internally).")
-    print(f"  LP bound {z_lp:.4f} is the B&B root-node relaxation bound.")
-    print(f"  B&C tightening: {abs(z_ilp - z_lp):.4f} above LP bound.")
+    print(f"  CG restricted-LP {z_lp:.4f} is from the restricted column pool (not the true LP bound).")
+    print(f"  Gap z_ILP - z_LP : {abs(z_ilp - z_lp):.4f} (integrality gap within the pool).")
     print("█" * 62 + "\n")
 
     # ── Save Results ───────────────────────────────────────────────────────────

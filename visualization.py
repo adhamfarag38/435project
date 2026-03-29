@@ -179,6 +179,111 @@ def plot_gantt_room(
         print(f"  Saved: {fname}")
 
 
+# ─── Full-week overview Gantt ────────────────────────────────────────────────
+
+def plot_gantt_week_overview(
+    result_df: pd.DataFrame,
+    week: int = 1,
+    policy: str = "",
+    save_path: str | None = None,
+):
+    """
+    Single figure with 5 side-by-side panels (Mon–Fri).
+    Providers on the Y-axis, time on the X-axis, bars coloured by room.
+    Panels share the same Y-axis (provider list) and X-axis (time range).
+    Designed to fit on one presentation slide.
+    """
+    DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    ADMIN_BLOCKS = [(540, 570), (690, 720), (720, 780), (990, 1020)]
+
+    df = result_df.dropna(subset=["assigned_room"]).copy()
+
+    # Consistent provider order (by total appointments descending)
+    provider_order = (
+        df.groupby("provider").size()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
+    prov_y = {p: i for i, p in enumerate(provider_order)}
+
+    rooms_used = sorted(df["assigned_room"].dropna().unique())
+    color_map  = _room_color_map(rooms_used)
+
+    days_present = [d for d in DAY_ORDER if d in df["day_of_week"].values]
+    n_days = len(days_present)
+
+    fig, axes = plt.subplots(
+        1, n_days,
+        figsize=(5 * n_days, max(8, len(provider_order) * 0.45)),
+        sharey=True,
+    )
+    if n_days == 1:
+        axes = [axes]
+
+    fig.suptitle(
+        f"Policy F — Full Week Schedule  |  Week {week}",
+        fontsize=14, fontweight="bold", y=1.01,
+    )
+
+    for ax, day in zip(axes, days_present):
+        day_df = df[df["day_of_week"] == day]
+
+        # Admin block shading
+        for blk_start, blk_end in ADMIN_BLOCKS:
+            ax.axvspan(blk_start, blk_end, alpha=0.10, color="red", zorder=0)
+
+        # Appointment bars
+        for _, row in day_df.iterrows():
+            y     = prov_y.get(row["provider"], 0)
+            color = color_map.get(row["assigned_room"], "grey")
+            ax.barh(y, row["duration_min"], left=row["start_min"],
+                    color=color, edgecolor="white", linewidth=0.4, height=0.7)
+            if row["duration_min"] >= 20:
+                ax.text(
+                    row["start_min"] + 1, y,
+                    str(row["assigned_room"]).replace("ER", "R"),
+                    va="center", fontsize=5.5, color="white", fontweight="bold",
+                )
+
+        # Providers scheduled this day (highlight active rows)
+        active = set(day_df["provider"])
+        for p in provider_order:
+            if p not in active:
+                ax.barh(prov_y[p], 540, left=480,
+                        color="#f0f0f0", edgecolor="none", height=0.7, zorder=0)
+
+        ax.set_title(f"{day}\n({len(day_df)} appts, "
+                     f"{day_df['provider'].nunique()} providers)",
+                     fontsize=9, pad=4)
+        ax.set_xlim(480, 1020)
+        x_ticks = list(range(480, 1021, 60))
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels([minutes_to_str(t) for t in x_ticks],
+                           rotation=45, fontsize=7)
+        ax.tick_params(axis="y", which="both", length=0)
+        ax.grid(axis="x", linestyle="--", alpha=0.3, zorder=1)
+
+    # Y-axis labels on leftmost panel only
+    axes[0].set_yticks(list(prov_y.values()))
+    axes[0].set_yticklabels(list(prov_y.keys()), fontsize=7)
+    axes[0].set_ylabel("Provider", fontsize=9)
+
+    # Shared room legend (bottom centre)
+    patches = [mpatches.Patch(color=color_map[r], label=r) for r in rooms_used]
+    fig.legend(
+        handles=patches, loc="lower center",
+        ncol=min(len(rooms_used), 8),
+        fontsize=7, title="Room", title_fontsize=8,
+        bbox_to_anchor=(0.5, -0.06), framealpha=0.9,
+    )
+
+    plt.tight_layout()
+    fname = save_path or f"gantt_week_overview_W{week}_{policy}.png"
+    plt.savefig(fname, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {fname}")
+
+
 # ─── KPI comparison bar chart ─────────────────────────────────────────────────
 
 def plot_kpi_comparison(kpis: list[dict], save_path: str | None = None):

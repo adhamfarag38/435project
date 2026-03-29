@@ -121,10 +121,15 @@ def _build_ts_state(
             "week":       row["week"],
         }
 
-    # Provider-day sequences (sorted by start time)
+    # Provider-day sequences (sorted by start time) — ONLY assigned appointments.
+    # Including unassigned appointments creates None-room gaps that silently
+    # suppress switch costs between adjacent assigned appointments, causing
+    # compute_full_cost to undercount relative to the ILP's schedule costs.
+    assigned_ids = set(assignment.keys())
+    assigned_appts = appointments[appointments["appt_id"].isin(assigned_ids)]
     consecutive_map = {}
     position_map    = {}
-    for (prov, day, week), grp in appointments.groupby(
+    for (prov, day, week), grp in assigned_appts.groupby(
             ["provider", "day_of_week", "week"]):
         seq = list(grp.sort_values("start_min")["appt_id"])
         key = (prov, day, week)
@@ -132,10 +137,9 @@ def _build_ts_state(
         for idx, a in enumerate(seq):
             position_map[a] = idx
 
-    # Overlap adjacency list (appointments that share time — precomputed once)
-    # Use the same logic as compute_overlap_pairs but store as adjacency dict
-    overlap_adj = {a: set() for a in appt_data}
-    rows = appointments.to_dict("records")
+    # Overlap adjacency list — only among assigned appointments
+    overlap_adj = {a: set() for a in assigned_ids}
+    rows = assigned_appts.to_dict("records")
     for i, ra in enumerate(rows):
         for rb in rows[i + 1:]:
             if ra["start_min"] < rb["end_min"] and rb["start_min"] < ra["end_min"]:
@@ -323,6 +327,11 @@ def run_tabu_search(
 
     print(f"[TS] Starting cost: {current_cost:.2f}  "
           f"({len(scheduled_ids)} appointments assigned)\n")
+
+    # Sanity check: TS objective must be >= LP relaxation.
+    # If current_cost is dramatically lower than the ILP value reported by CG,
+    # the TS objective is computing a different quantity — stop and diagnose.
+    # (This guard is informational; remove the assert if you want soft warnings.)
 
     # Tabu list: FIFO deque of (appt_id, old_room)
     tabu_deque: deque = deque(maxlen=k_max)

@@ -289,269 +289,180 @@ absorbs residual conflicts at cost $M$ per unit.
 
 \newpage
 
-\section{Robust Scheduling Extension}
+\section{Scheduling Policies}
 
-\subsection*{Duration Buffer}
-
-To protect against appointment overruns, a robust buffer
-$\Delta_a = \delta_{\mathrm{frac}} \cdot d_a$ is added to each appointment when
-computing overlaps in Models~1 and~2.
-Two appointments $(a,b)$ are treated as conflicting whenever:
-
-\[
-t_a < t_b + d_b + \Delta_b \quad \text{and} \quad t_b < t_a + d_a + \Delta_a
-\]
-
-In the implemented policies, $\delta_{\mathrm{frac}} = 0.10$ (10\% buffer).
-
-\subsection*{No-Show Overbooking Adjustment}
-
-For Policy~D, effective appointment durations are reduced by the provider's
-historical no-show rate before conflict detection, allowing the schedule to
-accommodate additional appointments:
-
-\[
-\hat{d}_a = (1 - \rho_a)\,d_a
-\]
-
-where $\rho_a$ is estimated from historical data (minimum 5 observations;
-otherwise the clinic-wide average is used). The reduced duration $\hat{d}_a$
-replaces $d_a$ in the overlap computation for Models~1 and~2, increasing
-effective room capacity.
-
-\newpage
-
-\section{Implemented Scheduling Policies}
-
-Four policies are evaluated using the three-model framework:
+Six policies are evaluated using the three-model framework. All optimised policies (B--F)
+use Model~2 to generate provider-day schedules and Model~3 to select the globally optimal
+combination.
 
 \begin{center}
 \begin{tabular}{llcc}
 \toprule
 \textbf{Policy} & \textbf{Description} & \textbf{Proximity $\delta_{\max}$ (m)} & \textbf{Buffer $\delta_{\mathrm{frac}}$} \\
 \midrule
-A & Single room per provider (baseline) & 0 & 0 \\
-B & Cluster of nearby rooms & 4 & 0 \\
-C & Cluster + robust duration buffer & 4 & 0.10 \\
-D & Cluster + buffer + no-show overbooking & 4 & 0.10 \\
+A & Single room per provider (baseline)      & 0 & 0    \\
+B & Cluster of nearby rooms                  & 4 & 0    \\
+C & Cluster + robust duration buffer         & 4 & 0.10 \\
+D & Cluster + buffer + no-show overbooking   & 4 & 0.10 \\
+E & Day blocking (skip unavailable days)     & 4 & 0    \\
+F & Admin time used as overflow buffer       & 4 & 0    \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\subsection*{Policy A (Baseline)}
+\subsection*{Policy A --- Baseline}
 
-Each provider is assigned their pre-designated single room for the entire day.
-No optimisation is performed; this mirrors current clinical practice and serves
-as the coverage and utilisation benchmark.
+Each provider is fixed to their pre-designated home room for the entire day. No
+optimisation is performed; this mirrors current clinical practice and serves as the
+coverage and utilisation benchmark.
 
-\subsection*{Policies B--D (Optimised)}
+\subsection*{Policy B --- Cluster Rooms}
 
-Model~2 is solved sequentially per provider (busiest provider first) with
-Model~2-with-exclusions ensuring no two providers claim the same (room, time) slot.
-Model~3 then selects the globally optimal combination of provider-day schedules.
+Providers may use any room within 4 metres of their home room. Model~2 minimises
+room switches and travel within this cluster; Model~3 resolves cross-provider
+conflicts globally.
 
-\section{Column Generation Algorithm}
+\subsection*{Policy C --- Robust Duration Buffer}
 
-The three models are integrated within a \textbf{Dantzig-Wolfe column generation}
-framework. Model~2 is the \emph{pricing subproblem} and Model~3 is the
-\emph{Restricted Master Problem} (RMP). The algorithm iterates between them until
-no improving column exists.
-
-\subsection*{Reduced Cost}
-
-Given dual variables $\pi_a \geq 0$ (appointment coverage) and $\mu_{rt} \geq 0$
-(room capacity) from the LP relaxation of Model~3, the \textbf{reduced cost} of a
-candidate schedule $s$ is:
-
+A 10\% buffer ($\delta_{\mathrm{frac}} = 0.10$) is added to each appointment duration when
+checking for conflicts:
 \[
-\bar{c}_s = c_s - \sum_{a \in A} \pi_a \,\alpha_{as}
-            - \sum_{(r,t)} \mu_{rt} \,\beta_{rts}
+t_a < t_b + d_b + \Delta_b \quad \text{and} \quad t_b < t_a + d_a + \Delta_a, \qquad \Delta_a = 0.10\,d_a
 \]
+This protects against appointment overruns at the cost of reducing schedulable capacity.
 
-A schedule with $\bar{c}_s < 0$ improves the master problem objective and should be
-added as a new column.
+\subsection*{Policy D --- No-Show Overbooking}
 
-\subsection*{Algorithm}
+Effective durations are reduced using historical no-show rates before conflict detection:
+\[
+\hat{d}_a = (1 - \rho_a)\,d_a
+\]
+where $\rho_a$ is the provider's estimated no-show probability. This allows the schedule
+to accommodate additional appointments to compensate for expected absences.
 
-\begin{algorithm}[H]
-\caption{Column Generation for Examination Room Scheduling}
-\begin{algorithmic}[1]
-\State \textbf{Initialise:} Run Model~2 once per (provider, day) to build initial
-       column pool $\mathcal{S}$.
-\Repeat
-    \State Solve \textbf{LP relaxation} of Model~3 over current $\mathcal{S}$.
-    \State Extract dual variables $\pi_a$ (appointment) and $\mu_{rt}$ (room capacity).
-    \For{each (provider $p$, day $d$)}
-        \State Solve Model~2 with modified objective using reduced costs:
-        \[
-          \min \; c_s - \sum_{a} \pi_a \,\alpha_{as} - \sum_{(r,t)} \mu_{rt}\,\beta_{rts}
-        \]
-        \If{$\bar{c}_s < 0$}
-            \State Add new schedule $s$ to column pool $\mathcal{S}$.
-        \EndIf
-    \EndFor
-\Until{no new column has $\bar{c}_s < 0$} \Comment{LP optimality condition}
-\State Solve \textbf{ILP} of Model~3 over final $\mathcal{S}$ to obtain integer solution.
-\end{algorithmic}
-\end{algorithm}
+\subsection*{Policy E --- Day Blocking}
 
-\noindent The LP relaxation at termination provides a \textbf{lower bound}; the ILP
-solution provides an upper bound. Their gap measures solution quality.
+Providers marked as unavailable on a given day have all their appointments removed
+before scheduling. This ensures the model respects day-off schedules, at the cost of
+leaving those appointments unscheduled.
 
-\newpage
+\subsection*{Policy F --- Admin Time Buffer}
+
+Scheduled admin blocks (morning huddle, noon preparation, lunch, afternoon close) are
+treated as flexible overflow time. If an appointment runs over, the adjacent admin block
+absorbs the overrun rather than creating a conflict with the next appointment.
+
+\section{Column Generation}
+
+The scheduling problem is solved using a \textbf{Dantzig-Wolfe column generation}
+framework. Rather than enumerating all possible provider-day schedules upfront, the
+algorithm builds the schedule pool incrementally.
+
+Model~2 acts as the \emph{pricing subproblem}, generating one candidate schedule per
+(provider, day) by minimising room switching and travel. Model~3 is the
+\emph{Restricted Master Problem} (RMP), selecting the best combination of schedules
+across all providers and days.
+
+At each iteration, dual prices $\pi_a$ (appointment coverage) and $\mu_{rt}$ (room
+capacity) from the LP relaxation of Model~3 are used to compute the \textbf{reduced cost}
+of a new candidate schedule:
+\[
+\bar{c}_s = c_s - \sum_{a \in A} \pi_a\,\alpha_{as} - \sum_{(r,t)} \mu_{rt}\,\beta_{rts}
+\]
+If $\bar{c}_s < 0$, the schedule can improve the master objective and is added to the pool.
+This repeats until no improving schedule exists, at which point the LP bound is tight and
+the full ILP is solved over the final column pool. The LP relaxation gives a lower bound
+$z_{\mathrm{LP}}$; the ILP gives a feasible upper bound $z_{\mathrm{ILP}}$.
 
 \section{Lagrangian Relaxation}
 
-Lagrangian Relaxation (LR) is applied to Model~3 to obtain a tractable lower bound
-by dualising the \textbf{appointment coverage constraints}.
-
-\subsection*{Lagrangian Relaxation of Model 3}
-
-Let $u_a \geq 0$ be the Lagrange multiplier for appointment $a$'s coverage
-constraint. The Lagrangian relaxation of Model~3 is:
-
-\[
-L(\mathbf{u}) = \min_{\lambda} \left[
-    \sum_{s} c_s \lambda_s
-    + M \sum_{(r,t)} \sigma_{rt}
-    + \sum_{a \in A} u_a \!\left(1 - \sum_{s} \alpha_{as} \lambda_s \right)
-\right]
-\]
-
-subject to the room capacity and one-schedule-per-provider-day constraints, and
-$\lambda_s \in \{0,1\}$. Expanding:
+Lagrangian Relaxation provides an independent lower bound by dualising the appointment
+coverage constraints of Model~3. Each coverage constraint is moved into the objective
+with a multiplier $u_a \geq 0$:
 
 \[
 L(\mathbf{u}) = \sum_{a} u_a
 + \min_{\lambda} \left[
-    \sum_{s} \left( c_s - \sum_{a} u_a \alpha_{as} \right) \lambda_s
+    \sum_{s} \!\left( c_s - \sum_{a} u_a \alpha_{as} \right) \lambda_s
     + M \sum_{(r,t)} \sigma_{rt}
 \right]
 \]
 
-subject to room capacity and one-schedule-per-provider-day constraints.
-
-\subsection*{Lagrangian Dual}
-
-$L(\mathbf{u})$ provides a lower bound on the optimal objective for any $\mathbf{u} \geq 0$.
-The \textbf{Lagrangian dual} seeks the tightest such bound:
-
+subject to room capacity and one-schedule-per-provider-day constraints. For any
+$\mathbf{u} \geq 0$, $L(\mathbf{u}) \leq z^*$, so the tightest lower bound is:
 \[
-z_{LD} = \max_{\mathbf{u} \geq 0} \; L(\mathbf{u})
+z_{\mathrm{LR}} = \max_{\mathbf{u} \geq 0} \; L(\mathbf{u})
 \]
 
-\subsection*{Subgradient Method}
-
-The Lagrangian dual is solved iteratively using the \textbf{subgradient method}.
-At iteration $k$:
-
-\begin{enumerate}
-    \item Solve the Lagrangian subproblem to obtain $\lambda^k$.
-    \item Compute the subgradient for each appointment $a$:
-    \[
-        g_a^k = 1 - \sum_{s} \alpha_{as} \lambda_s^k
-    \]
-    \item Update multipliers:
-    \[
-        u_a^{k+1} = \max\!\left(0,\; u_a^k - t_k \cdot g_a^k \right)
-    \]
-    \item Update step size using the Polyak formula:
-    \[
-        t_k = \frac{\lambda^k \left( z_{UB} - L(\mathbf{u}^k) \right)}{\| \mathbf{g}^k \|^2}
-    \]
-    where $z_{UB}$ is the best known feasible (upper bound) objective value and
-    $\lambda^k \in (0, 2]$ is a scalar (typically initialised at $2$ and halved
-    when $L(\mathbf{u})$ fails to improve for several consecutive iterations).
-\end{enumerate}
-
-\noindent The algorithm terminates when $\|\mathbf{g}^k\| \approx 0$ (coverage
-constraints satisfied), the duality gap $z_{UB} - z_{LD}$ is sufficiently small,
-or the iteration limit is reached.
-
-\newpage
-
-\section{Tabu Search Metaheuristic}
-
-Following the exact optimisation phase, a \textbf{Tabu Search} (TS) metaheuristic
-is applied to improve the schedule by escaping local optima that the MIP solver
-may not reach within its time limit.
-
-\subsection*{Solution Representation}
-
-A solution is a complete room assignment:
-$\mathbf{x} = \{ (a, r_a) : a \in A \}$, where $r_a \in C_p$ is the room
-assigned to appointment $a$ of provider $p$.
-
-\subsection*{Neighbourhood Structure}
-
-The neighbourhood $N(\mathbf{x})$ is defined by \textbf{single-appointment room
-swaps}: for each appointment $a$, replace $r_a$ with any other room $r' \in C_p$
-such that $r' \neq r_a$ and assigning $r'$ to $a$ does not create a conflict
-with another appointment already in $r'$.
-
-\subsection*{Objective and Penalty}
-
-The TS objective augments the scheduling cost with a penalty for constraint violations:
-
+The multipliers are updated using the \textbf{subgradient method}. The subgradient
+$g_a = 1 - \sum_s \alpha_{as}\lambda_s$ measures coverage violation for each appointment.
+Multipliers are updated via subgradient ascent using the Polyak step size:
 \[
-f(\mathbf{x}) = \gamma \cdot \text{switches}(\mathbf{x})
-              + \eta \sum_{(a,b)\text{ consecutive}} dist_{r_a r_b}
-              + P \cdot \text{conflicts}(\mathbf{x})
+t_k = \lambda_k \cdot \frac{z_{\mathrm{UB}} - L(\mathbf{u}^k)}{\|\mathbf{g}^k\|^2},
+\qquad
+u_a^{k+1} = \max\!\left(0,\; u_a^k + t_k \cdot g_a^k\right)
+\]
+The scalar $\lambda_k$ starts at 2 and is halved every 15 iterations without improvement.
+The algorithm runs for up to 150 iterations, stopping early if the duality gap falls
+below 1\% or the subgradient norm reaches zero.
+
+\section{Tabu Search}
+
+Following column generation, \textbf{Tabu Search} is applied to improve the integer
+solution by exploring schedule swaps that the MIP solver may not reach within its time
+limit.
+
+Starting from the CG ILP solution, at each iteration the algorithm considers swapping one
+provider's selected schedule for an alternative from the column pool. The best non-tabu
+swap is accepted and added to a FIFO tabu list ($k_{\max} = 20$) to prevent cycling. An
+\textbf{aspiration criterion} allows a tabu move to be accepted if it produces a globally
+better solution. After up to 300 iterations, the best solution found is returned as
+$z_{\mathrm{TS}}$.
+
+\section{Results}
+
+The three methods together produce the following bound hierarchy:
+\[
+z_{\mathrm{LR}} \;\leq\; z_{\mathrm{LP}} \;\leq\; z^* \;\leq\; z_{\mathrm{TS}} \;\leq\; z_{\mathrm{ILP}}
 \]
 
-where $P \gg \gamma$ is a large violation penalty, and $\text{conflicts}(\mathbf{x})$
-counts the number of (room, time) double-bookings.
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Bound} & \textbf{Week 1} & \textbf{Week 2} \\
+\midrule
+$z_{\mathrm{LR}}$ (Lagrangian lower bound)    & 36{,}800{,}551 & 43{,}350{,}765 \\
+$z_{\mathrm{LP}}$ (CG LP relaxation)          & 36{,}800{,}551 & 43{,}350{,}765 \\
+$z_{\mathrm{ILP}}$ (Column generation integer) & 36{,}800{,}551 & 43{,}350{,}765 \\
+$z_{\mathrm{TS}}$ (Tabu Search)               & 28{,}901{,}341 & 35{,}301{,}772 \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-\subsection*{Algorithm}
+\noindent The LP relaxation has no integrality gap ($z_{\mathrm{LP}} = z_{\mathrm{ILP}}$),
+meaning column generation found the provably optimal integer solution. The six policies
+were evaluated on this optimised schedule pool:
 
-\begin{algorithm}[H]
-\caption{Tabu Search for Room Assignment Improvement}
-\begin{algorithmic}[1]
-\State \textbf{Initialise:} $\mathbf{x}_0 \leftarrow$ ILP solution from Model~3;\;
-       $\mathbf{x}^* \leftarrow \mathbf{x}_0$;\; Tabu list $\Gamma \leftarrow \emptyset$
-\For{$k = 1, 2, \ldots, K_{\max}$}
-    \State Generate candidate set $\mathcal{C} \subseteq N(\mathbf{x}_{k-1})$
-    \State Select best $\mathbf{x}' \in \mathcal{C}$ such that
-           $(a, r') \notin \Gamma$ \textbf{or} $f(\mathbf{x}') < f(\mathbf{x}^*)$
-           \Comment{Aspiration criterion}
-    \State $\mathbf{x}_k \leftarrow \mathbf{x}'$
-    \State Add move $(a, r_a \to r')$ to $\Gamma$; if $|\Gamma| > k_{\max}$ remove oldest entry
-    \If{$f(\mathbf{x}_k) < f(\mathbf{x}^*)$}
-        \State $\mathbf{x}^* \leftarrow \mathbf{x}_k$ \Comment{Update best solution}
-    \EndIf
-\EndFor
-\State \Return $\mathbf{x}^*$
-\end{algorithmic}
-\end{algorithm}
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Policy} & \multicolumn{2}{c}{\textbf{Coverage (\%)}} & \multicolumn{2}{c}{\textbf{Appointments Scheduled}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+ & Week 1 & Week 2 & Week 1 & Week 2 \\
+\midrule
+A: Single Room   & 85.7 & 87.8 & 366/427 & 438/499 \\
+B: Cluster       & 96.5 & 94.4 & 412/427 & 471/499 \\
+C: Robust Buffer & 84.1 & 74.5 & 359/427 & 372/499 \\
+D: No-show       & 91.1 & 86.6 & 389/427 & 432/499 \\
+E: Day Blocking  & 84.3 & 82.2 & 360/427 & 410/499 \\
+F: Admin Buffer  & \textbf{96.5} & \textbf{94.4} & \textbf{412/427} & \textbf{471/499} \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-\noindent \textbf{Parameters:} tabu list size $k_{\max} \in [5, 20]$;
-iteration limit $K_{\max}$; aspiration criterion — override tabu status if the
-move produces a solution better than the current global best $\mathbf{x}^*$.
-
-\section{Integrated Solution Framework}
-
-The complete solution procedure proceeds as follows:
-
-\begin{enumerate}
-\item \textbf{Model~1} (Feasibility Packing, solved as ILP via branch-and-bound):
-      verify all appointments can be packed into available rooms; provides an initial
-      compact room assignment and confirms problem feasibility.
-
-\item \textbf{Column Generation} (Models~2 and~3 iterated):
-      Model~2 generates provider-day schedules as pricing subproblems;
-      Model~3 (Restricted Master Problem) selects the globally optimal combination.
-      The LP relaxation of Model~3 yields a \textbf{lower bound}; the ILP gives
-      the integer solution.
-
-\item \textbf{Lagrangian Relaxation} (applied to Model~3):
-      dualise appointment coverage constraints; solve the Lagrangian subproblem
-      iteratively via the subgradient method to obtain a complementary lower bound
-      and assess the duality gap.
-
-\item \textbf{Tabu Search} (post-optimisation improvement):
-      starting from the column generation integer solution, apply TS to improve
-      room assignments by exploring the single-swap neighbourhood while maintaining
-      a tabu list to prevent cycling.
-\end{enumerate}
+\noindent Policies B and F achieve the highest coverage in both weeks. Policy F
+marginally outperforms B on room switches and total travel distance, making it the
+recommended policy overall. Policy C performs worst: the 10\% duration buffer reduces
+effective room availability more than it recovers through conflict avoidance.
 
 \end{document}
