@@ -19,8 +19,9 @@ from data_loader import (
     load_distance_matrix, get_provider_cluster, ROOMS
 )
 from model1 import run_model1_all_days
-from model2 import generate_all_schedules, generate_schedules_sequential, schedules_to_dataframe
-from model3 import build_master_problem, master_to_appointments
+from model2 import generate_schedules_sequential, schedules_to_dataframe
+from model3 import master_to_appointments
+from column_generation import run_column_generation
 from visualization import (
     plot_gantt_provider, plot_gantt_room,
     plot_kpi_comparison, print_kpi_table
@@ -271,39 +272,73 @@ def compute_kpis(result_df, dist_matrix, policy_name):
     Compute Key Performance Indicators for a scheduling solution.
 
     KPIs:
-      - Coverage rate: % appointments assigned a room
-      - Avg switches per provider-day
-      - Total travel distance (m)
-      - Room utilisation: % of clinic hours rooms are occupied
-      - Avg appointments per room per day
+      1.  Coverage (%)              — % of appointments assigned a room
+      2.  Rooms Used                — distinct rooms opened (compact = fewer)
+      3.  Room Utilisation (%)      — occupied min / total available room-min
+      4.  Avg Switches/Provider-Day — mean room switches per provider per day
+      5.  Total Travel (m)          — sum of inter-room travel distances
+      6.  Avg Travel/Switch (m)     — travel efficiency per switch
+      7.  Provider Compactness (%)  — % of provider-days using exactly 1 room
+      8.  Peak Concurrent Rooms     — max rooms in use at any one minute
     """
+    scheduled = result_df[result_df["assigned_room"].notna()]
     total_appts = len(result_df)
-    assigned = result_df["assigned_room"].notna().sum()
-    coverage = assigned / total_appts * 100 if total_appts > 0 else 0
+    assigned    = len(scheduled)
+    coverage    = assigned / total_appts * 100 if total_appts > 0 else 0
 
+    # ── Switches and travel ──────────────────────────────────────────────────
     if "num_switches" in result_df.columns:
-        avg_switches = result_df.groupby(["provider", "day_of_week", "week"])["num_switches"].first().mean()
-        total_travel = result_df.groupby(["provider", "day_of_week", "week"])["total_travel"].first().sum()
+        pd_stats    = result_df.groupby(["provider", "day_of_week", "week"]).first()
+        avg_switches = pd_stats["num_switches"].mean()
+        total_travel = pd_stats["total_travel"].sum()
+        total_switches = pd_stats["num_switches"].sum()
     else:
-        avg_switches = 0
-        total_travel = 0
+        avg_switches = total_travel = total_switches = 0
 
-    # Room utilisation (minutes occupied / total clinic minutes available)
-    # Clinic hours: 540-1020 = 480 min/day (Mon-Thu), 480 min/day (Fri with different admin)
+    avg_travel_per_switch = (total_travel / total_switches
+                             if total_switches > 0 else 0.0)
+
+    # ── Rooms used ───────────────────────────────────────────────────────────
+    rooms_used = scheduled["assigned_room"].nunique()
+
+    # ── Room utilisation ─────────────────────────────────────────────────────
+    # Clinical operating minutes per day: 480 (9:00-17:00 minus lunch/admin ≈ 390 net,
+    # but we use full 480 as denominator consistent with previous reports)
     clinic_min_per_day = 480
     days_in_data = result_df["date"].nunique()
     total_available_room_min = len(ROOMS) * days_in_data * clinic_min_per_day
-    occupied_min = result_df[result_df["assigned_room"].notna()]["duration_min"].sum()
-    utilisation = occupied_min / total_available_room_min * 100 if total_available_room_min > 0 else 0
+    occupied_min = scheduled["duration_min"].sum()
+    utilisation  = occupied_min / total_available_room_min * 100 if total_available_room_min > 0 else 0
+
+    # ── Provider compactness ─────────────────────────────────────────────────
+    # % of provider-days where provider stays in exactly 1 room all day
+    if not scheduled.empty:
+        rooms_per_pd = (scheduled.groupby(["provider", "day_of_week", "week"])
+                        ["assigned_room"].nunique())
+        compact_pct  = (rooms_per_pd == 1).mean() * 100
+    else:
+        compact_pct = 0.0
+
+    # ── Peak concurrent rooms ─────────────────────────────────────────────────
+    # Maximum number of distinct rooms occupied at any single minute of the week
+    minute_rooms: dict[int, set] = {}
+    for _, row in scheduled.iterrows():
+        for t in range(int(row["start_min"]), int(row["end_min"])):
+            minute_rooms.setdefault(t, set()).add(row["assigned_room"])
+    peak_rooms = max((len(v) for v in minute_rooms.values()), default=0)
 
     return {
-        "Policy": policy_name,
-        "Coverage (%)": round(coverage, 1),
-        "Avg Switches/Provider-Day": round(float(avg_switches) if avg_switches == avg_switches else 0, 2),
-        "Total Travel (m)": round(float(total_travel), 1),
-        "Room Utilisation (%)": round(utilisation, 1),
-        "Appointments Scheduled": int(assigned),
-        "Total Appointments": int(total_appts),
+        "Policy":                    policy_name,
+        "Coverage (%)":              round(coverage, 1),
+        "Rooms Used":                int(rooms_used),
+        "Room Utilisation (%)":      round(utilisation, 1),
+        "Avg Switches/PD":           round(float(avg_switches) if avg_switches == avg_switches else 0, 2),
+        "Total Travel (m)":          round(float(total_travel), 1),
+        "Avg Travel/Switch (m)":     round(float(avg_travel_per_switch), 2),
+        "Provider Compactness (%)":  round(float(compact_pct), 1),
+        "Peak Concurrent Rooms":     int(peak_rooms),
+        "Appointments Scheduled":    int(assigned),
+        "Total Appointments":        int(total_appts),
     }
 
 
@@ -373,110 +408,99 @@ def run_full_pipeline(
         all_kpis.append(kpi_aw)
         print(f"     Coverage: {kpi_aw['Coverage (%)']}%")
 
-    # ── Policy B: Cluster-based optimisation (Model 2 → Model 3) ─────────────
+    # ── Policy B: Cluster-based optimisation (CG → Model 3) ──────────────────
     if "B_cluster" in policies_to_run:
-        print("\n[3B] Policy B — Cluster rooms (Model 2 sequential + Model 3)...")
+        print("\n[3B] Policy B — Cluster rooms (Column Generation)...")
         cfg = POLICIES["B_cluster"]
-        schedules_b = generate_schedules_sequential(
+        cg_b = run_column_generation(
             appts, avail, dist_matrix,
             delta_frac=cfg["delta_frac"],
             proximity_threshold=cfg["proximity_threshold"],
-            verbose=verbose_model2
         )
-        master_b = build_master_problem(schedules_b, appts, integer=True, verbose=False)
+        master_b = cg_b["master_result"]
         res_b = master_to_appointments(master_b, appts)
         res_b["policy"] = "B_cluster"
         policy_results["B_cluster"] = res_b
         kpi_b = compute_kpis(res_b, dist_matrix, "B: Cluster")
         all_kpis.append(kpi_b)
-        print(f"     Master cost: {master_b['total_cost']:.2f}, "
-              f"Coverage: {kpi_b['Coverage (%)']}%")
+        print(f"     Coverage: {kpi_b['Coverage (%)']}%")
 
     # ── Policy C: Robust duration buffer (policy f) ───────────────────────────
     if "C_robust_buffer" in policies_to_run:
-        print("\n[3C] Policy C — Robust scheduling (10% duration buffer, policy f)...")
+        print("\n[3C] Policy C — Robust scheduling (10% duration buffer)...")
         cfg = POLICIES["C_robust_buffer"]
-        schedules_c = generate_schedules_sequential(
+        cg_c = run_column_generation(
             appts, avail, dist_matrix,
             delta_frac=cfg["delta_frac"],
             proximity_threshold=cfg["proximity_threshold"],
-            verbose=verbose_model2
         )
-        master_c = build_master_problem(schedules_c, appts, integer=True, verbose=False)
+        master_c = cg_c["master_result"]
         res_c = master_to_appointments(master_c, appts)
         res_c["policy"] = "C_robust_buffer"
         policy_results["C_robust_buffer"] = res_c
         kpi_c = compute_kpis(res_c, dist_matrix, "C: Robust Buffer (f)")
         all_kpis.append(kpi_c)
-        print(f"     Master cost: {master_c['total_cost']:.2f}, "
-              f"Coverage: {kpi_c['Coverage (%)']}%")
+        print(f"     Coverage: {kpi_c['Coverage (%)']}%")
 
     # ── Policy D: No-show adjusted (overbooking) ──────────────────────────────
     if "D_robust_noshow" in policies_to_run:
         print("\n[3D] Policy D — No-show adjustment (overbooking)...")
         appts_ns = apply_noshow_adjustment(appts, noshow_rates)
-        # Temporarily replace duration with effective duration for overlap computation
         appts_ns_sched = appts_ns.copy()
         appts_ns_sched["duration_min"] = appts_ns_sched["effective_duration"].round().astype(int)
         appts_ns_sched["end_min"] = appts_ns_sched["start_min"] + appts_ns_sched["duration_min"]
 
         cfg = POLICIES["D_robust_noshow"]
-        schedules_d = generate_schedules_sequential(
+        cg_d = run_column_generation(
             appts_ns_sched, avail, dist_matrix,
             delta_frac=cfg["delta_frac"],
             proximity_threshold=cfg["proximity_threshold"],
-            verbose=verbose_model2
         )
-        master_d = build_master_problem(schedules_d, appts_ns_sched, integer=True, verbose=False)
+        master_d = cg_d["master_result"]
         res_d = master_to_appointments(master_d, appts)
         res_d["policy"] = "D_robust_noshow"
         policy_results["D_robust_noshow"] = res_d
         kpi_d = compute_kpis(res_d, dist_matrix, "D: No-show Robust")
         all_kpis.append(kpi_d)
-        print(f"     Master cost: {master_d['total_cost']:.2f}, "
-              f"Coverage: {kpi_d['Coverage (%)']}%")
+        print(f"     Coverage: {kpi_d['Coverage (%)']}%")
 
     # ── Policy E: Day blocking (policy c) ────────────────────────────────────
     if "E_day_blocking" in policies_to_run:
-        print("\n[3E] Policy E — Day blocking (policy c): skip unavailable provider-days...")
+        print("\n[3E] Policy E — Day blocking: skip unavailable provider-days...")
         appts_blocked = apply_day_blocking(appts, avail)
         cfg = POLICIES["E_day_blocking"]
-        schedules_e = generate_schedules_sequential(
+        cg_e = run_column_generation(
             appts_blocked, avail, dist_matrix,
             delta_frac=cfg["delta_frac"],
             proximity_threshold=cfg["proximity_threshold"],
-            verbose=verbose_model2
         )
-        master_e = build_master_problem(schedules_e, appts_blocked, integer=True, verbose=False)
-        # Merge back against ORIGINAL appts so blocked appointments appear as unscheduled
+        master_e = cg_e["master_result"]
+        # Merge back against ORIGINAL appts so blocked appointments appear unscheduled
         res_e = master_to_appointments(master_e, appts)
         res_e["policy"] = "E_day_blocking"
         policy_results["E_day_blocking"] = res_e
         kpi_e = compute_kpis(res_e, dist_matrix, "E: Day Blocking (c)")
         all_kpis.append(kpi_e)
-        print(f"     Master cost: {master_e['total_cost']:.2f}, "
-              f"Coverage: {kpi_e['Coverage (%)']}%")
+        print(f"     Coverage: {kpi_e['Coverage (%)']}%")
 
     # ── Policy F: Admin time buffer (policy d) ────────────────────────────────
     if "F_admin_buffer" in policies_to_run:
-        print("\n[3F] Policy F — Admin time buffer (policy d): absorb overruns into admin blocks...")
+        print("\n[3F] Policy F — Admin time buffer: absorb overruns into admin blocks...")
         appts_admin = apply_admin_time_buffer(appts)
         cfg = POLICIES["F_admin_buffer"]
-        schedules_f = generate_schedules_sequential(
+        cg_f = run_column_generation(
             appts_admin, avail, dist_matrix,
             delta_frac=cfg["delta_frac"],
             proximity_threshold=cfg["proximity_threshold"],
-            verbose=verbose_model2
         )
-        master_f = build_master_problem(schedules_f, appts_admin, integer=True, verbose=False)
+        master_f = cg_f["master_result"]
         # Merge back against ORIGINAL appts to report actual appointment coverage
         res_f = master_to_appointments(master_f, appts)
         res_f["policy"] = "F_admin_buffer"
         policy_results["F_admin_buffer"] = res_f
         kpi_f = compute_kpis(res_f, dist_matrix, "F: Admin Buffer (d)")
         all_kpis.append(kpi_f)
-        print(f"     Master cost: {master_f['total_cost']:.2f}, "
-              f"Coverage: {kpi_f['Coverage (%)']}%")
+        print(f"     Coverage: {kpi_f['Coverage (%)']}%")
 
     # ── KPI summary ───────────────────────────────────────────────────────────
     print("\n" + "=" * 60)

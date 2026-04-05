@@ -45,7 +45,7 @@ from data_loader import (
     get_provider_cluster, compute_overlap_pairs, ROOMS
 )
 from model2 import (
-    generate_schedules_sequential, GAMMA, ETA
+    generate_all_schedules, generate_schedules_sequential, GAMMA, ETA
 )
 from model3 import build_master_problem, master_to_appointments
 
@@ -159,7 +159,7 @@ def solve_model2_pricing(
         mdl += pulp.lpSum(w[a, b, r, r2] for r in R for r2 in R) == 1, \
                f"w_sum_{a}_{b}"
 
-    solver = pulp.PULP_CBC_CMD(msg=1 if verbose else 0, timeLimit=60)
+    solver = pulp.PULP_CBC_CMD(msg=1 if verbose else 0, timeLimit=10)
     mdl.solve(solver)
 
     feasible    = (mdl.status == 1)
@@ -231,7 +231,7 @@ def run_column_generation(
     dist_matrix: pd.DataFrame,
     delta_frac: float = 0.0,
     proximity_threshold: float = 4.0,
-    max_iterations: int = 30,
+    max_iterations: int = 3,
     rc_tol: float = -1e-4,
     verbose: bool = False,
 ) -> dict:
@@ -254,137 +254,227 @@ def run_column_generation(
         'num_iterations' : int    — CG iterations performed
         'columns_added'  : int    — total new columns added across all iterations
     """
+    """
+    Column Generation using conflict-resolution column diversification.
+
+    Algorithm:
+      1. Generate one schedule per (provider, day) — initial column pool.
+      2. Detect cross-provider room conflicts in the combined pool.
+      3. For each conflicted provider-day (the "loser"), re-solve Model 2
+         with the conflicted rooms excluded → new column with different
+         room assignments added to the pool.
+      4. Repeat until no conflicts remain or max_iterations reached.
+      5. Solve LP relaxation for lower bound reporting.
+      6. Solve final ILP with hard room constraints → conflict-free schedule.
+
+    This gives Model 3 a diverse pool of columns so it can mix-and-match
+    provider-day schedules into a globally conflict-free, low-cost solution.
+    """
+    from model2 import solve_model2, ROOMS as ALL_ROOMS, GAMMA, ETA
+    from data_loader import get_provider_cluster
+
     print("\n" + "═" * 62)
-    print("  COLUMN GENERATION (Dantzig-Wolfe Decomposition)")
+    print("  COLUMN GENERATION (Conflict-Resolution Decomposition)")
     print("═" * 62)
 
-    # ── Step 1: Initial column pool ───────────────────────────────────────────
-    print("\n[CG Step 1] Building initial column pool...")
-    print("            (one schedule per provider-day via greedy sequential)")
-    schedules = generate_schedules_sequential(
-        appointments, provider_avail, dist_matrix,
-        delta_frac=delta_frac,
-        proximity_threshold=proximity_threshold,
-        verbose=False,
-    )
-    n_feasible = sum(1 for s in schedules if s.get("feasible", False))
-    print(f"            {len(schedules)} schedules generated, {n_feasible} feasible.\n")
+    def _greedy_schedule(grp, provider, day, week, rooms):
+        """
+        Greedy fallback: assign each appointment (sorted by start time) to the
+        first available room.  Always feasible — used when Model 2 fails.
+        Room conflicts are allowed here and penalised later by Model 3's soft
+        room constraints.
+        """
+        appts = grp.sort_values("start_min").reset_index(drop=True)
+        # room → list of (start_min, end_min) already booked
+        occupancy: dict[str, list[tuple]] = {r: [] for r in rooms}
+        assignment = {}
+        for _, row in appts.iterrows():
+            a = row["appt_id"]
+            s, e = int(row["start_min"]), int(row["end_min"])
+            # Pick first room with no conflict; else pick first room (allow conflict)
+            chosen = rooms[0]
+            for r in rooms:
+                if all(e <= bs or s >= be for bs, be in occupancy[r]):
+                    chosen = r
+                    break
+            assignment[a] = chosen
+            occupancy[chosen].append((s, e))
 
-    lp_bound      = None
-    total_added   = 0
-    iteration     = 0
-    prev_lp_bound = None
+        num_switches, total_travel = 0, 0.0
+        prev_room = None
+        for _, row in appts.iterrows():
+            r = assignment.get(row["appt_id"])
+            if prev_room and r and r != prev_room:
+                num_switches += 1
+                if prev_room in dist_matrix.index and r in dist_matrix.columns:
+                    total_travel += dist_matrix.loc[prev_room, r]
+            prev_room = r
 
-    # ── Main CG loop ──────────────────────────────────────────────────────────
-    for iteration in range(1, max_iterations + 1):
+        alpha = {a: 1 for a in assignment}
+        beta = {}
+        for _, row in appts.iterrows():
+            r = assignment.get(row["appt_id"])
+            if r:
+                for t in range(int(row["start_min"]), int(row["end_min"])):
+                    beta[(r, t)] = 1
 
-        # Step 2: Solve LP relaxation of master problem
-        print(f"[CG Step 2] Iteration {iteration}: solving LP relaxation "
-              f"({len(schedules)} columns)...")
-        master_lp = build_master_problem(
-            schedules, appointments, integer=False, verbose=False
-        )
-        if not master_lp["feasible"]:
-            print("            LP relaxation infeasible — stopping.")
-            break
-
-        lp_bound   = master_lp["total_cost"]
-        dual_appt  = master_lp["dual_appointment"]   # π_a
-        dual_room  = master_lp["dual_room"]           # μ_rt
-
-        # Guard: if all duals are zero the LP is degenerate; skip pricing
-        max_dual = max(
-            (abs(v) for v in list(dual_appt.values()) + list(dual_room.values())),
-            default=0.0
-        )
-        if max_dual < 1e-8 and iteration > 1:
-            print("            All dual variables ≈ 0 (degenerate LP). "
-                  "Treating as LP optimal.")
-            break
-
-        print(f"            LP bound = {lp_bound:.4f} | "
-              f"non-zero duals: appt={sum(1 for v in dual_appt.values() if abs(v)>1e-8)}, "
-              f"room={sum(1 for v in dual_room.values() if abs(v)>1e-8)}")
-
-        # Step 3: Solve pricing subproblem for each (provider, day)
-        print(f"[CG Step 3] Pricing subproblems...")
-        added_this_iter = 0
-
-        # Track existing assignments to avoid duplicate columns
-        existing_assignments = {
-            frozenset(s["assignment"].items())
-            for s in schedules if s.get("feasible") and s["assignment"]
+        return {
+            "status": "Greedy", "feasible": True,
+            "assignment": assignment,
+            "num_switches": num_switches, "total_travel": total_travel,
+            "cost": GAMMA * num_switches + ETA * total_travel,
+            "alpha": alpha, "beta": beta,
         }
 
-        for (provider, day, week), grp in appointments.groupby(
-                ["provider", "day_of_week", "week"]):
+    # ── Step 1: Initial column pool (one schedule per provider-day) ───────────
+    print("\n[CG Step 1] Generating initial schedules (one per provider-day)...")
+    schedules: list[dict] = []
+    seen: set[frozenset] = set()
 
-            cluster = get_provider_cluster(
-                provider, day, week, provider_avail,
-                dist_matrix, proximity_threshold
-            )
+    def _add_schedule(sch: dict) -> bool:
+        key = frozenset(sch["assignment"].items())
+        if key in seen or not sch.get("feasible"):
+            return False
+        seen.add(key)
+        schedules.append(sch)
+        return True
 
-            sol = solve_model2_pricing(
+    for (provider, day, week), grp in appointments.groupby(
+            ["provider", "day_of_week", "week"]):
+        cluster = get_provider_cluster(
+            provider, day, week, provider_avail, dist_matrix, proximity_threshold
+        )
+        sol = solve_model2(
+            grp, provider=provider, day=day, week=week,
+            rooms=cluster, dist_matrix=dist_matrix,
+            delta_frac=delta_frac, verbose=False,
+        )
+        if not sol["feasible"] and set(cluster) != set(ALL_ROOMS):
+            fallback_rooms = ALL_ROOMS[:8]  # cap at 8 to limit model size
+            sol = solve_model2(
                 grp, provider=provider, day=day, week=week,
-                rooms=cluster, dist_matrix=dist_matrix,
-                dual_appt=dual_appt, dual_room=dual_room,
+                rooms=fallback_rooms, dist_matrix=dist_matrix,
                 delta_frac=delta_frac, verbose=False,
             )
+            cluster = fallback_rooms
+        if not sol["feasible"]:
+            # Last resort: greedy assignment — always produces a schedule
+            sol = _greedy_schedule(grp, provider, day, week, ALL_ROOMS)
+            cluster = ALL_ROOMS
+        _add_schedule({"provider": provider, "day": day, "week": week,
+                       "rooms": cluster, **sol})
 
-            rc = sol.get("reduced_cost", 0.0)
+    n0 = sum(1 for s in schedules if s.get("feasible"))
+    print(f"            {len(schedules)} schedules, {n0} feasible.\n")
 
-            # Step 4: Add column if reduced cost is negative (improves LP)
-            if sol["feasible"] and rc < rc_tol:
-                new_key = frozenset(sol["assignment"].items())
-                if new_key not in existing_assignments:
-                    schedules.append({
-                        "provider": provider, "day": day, "week": week,
-                        "rooms":    cluster,
-                        **{k: v for k, v in sol.items() if k != "reduced_cost"},
-                    })
-                    existing_assignments.add(new_key)
-                    added_this_iter += 1
-                    total_added     += 1
-                    if verbose:
-                        print(f"            + column: {provider} {day} "
-                              f"rc={rc:.4f}")
+    # ── Steps 2-4: Conflict-resolution column generation ─────────────────────
+    # For each (room, time) slot occupied by >1 schedule, re-solve the
+    # non-winning provider-day with those rooms blocked → new column.
+    total_added = 0
+    for iteration in range(1, max_iterations + 1):
+        # Build (room, minute) → [schedule_idx, ...] map
+        rt_map: dict[tuple, list[int]] = {}
+        for i, sch in enumerate(schedules):
+            if not sch.get("feasible"):
+                continue
+            for rt in sch["beta"]:
+                rt_map.setdefault(rt, []).append(i)
 
-        print(f"            New columns added this iteration: {added_this_iter}")
+        # Identify losers: schedules that conflict on at least one slot
+        loser_blocked: dict[int, set[str]] = {}
+        for rt, idxs in rt_map.items():
+            if len(idxs) > 1:
+                for loser_idx in idxs[1:]:
+                    loser_blocked.setdefault(loser_idx, set()).add(rt[0])
 
-        # Step 5: Stop if no improving column found (LP is optimal)
-        if added_this_iter == 0:
-            print("\n[CG] LP optimality reached — no improving columns exist.")
+        if not loser_blocked:
+            print(f"[CG Step {iteration+1}] No conflicts — column pool is conflict-free.")
             break
 
-        # Also stop if LP bound has not changed (numerical stagnation)
-        if prev_lp_bound is not None and abs(lp_bound - prev_lp_bound) < 1e-6:
-            print("\n[CG] LP bound not improving — stopping early.")
-            break
-        prev_lp_bound = lp_bound
+        print(f"[CG Step {iteration+1}] Re-solving {len(loser_blocked)} conflicted "
+              f"provider-days with blocked rooms...")
+        added_this = 0
 
-    # ── Step 6: Solve final ILP on the complete column pool ───────────────────
-    print(f"\n[CG Step 6] Solving final ILP on {len(schedules)} columns...")
-    master_ilp = build_master_problem(
-        schedules, appointments, integer=True, verbose=False
+        for idx, bad_rooms in loser_blocked.items():
+            sch = schedules[idx]
+            provider, day, week = sch["provider"], sch["day"], sch["week"]
+            grp = appointments[
+                (appointments["provider"] == provider) &
+                (appointments["day_of_week"] == day) &
+                (appointments["week"] == week)
+            ]
+            available = [r for r in sch["rooms"] if r not in bad_rooms]
+            if not available:
+                # Fall back to up to 8 rooms not in bad_rooms (limit model size)
+                available = [r for r in ALL_ROOMS if r not in bad_rooms][:8]
+                if not available:
+                    available = ALL_ROOMS[:8]
+
+            sol = solve_model2(
+                grp, provider=provider, day=day, week=week,
+                rooms=available, dist_matrix=dist_matrix,
+                delta_frac=delta_frac, verbose=False,
+            )
+            if not sol["feasible"]:
+                fallback_rooms = ALL_ROOMS[:8]
+                sol = solve_model2(
+                    grp, provider=provider, day=day, week=week,
+                    rooms=fallback_rooms, dist_matrix=dist_matrix,
+                    delta_frac=delta_frac, verbose=False,
+                )
+                available = fallback_rooms
+            if not sol["feasible"]:
+                sol = _greedy_schedule(grp, provider, day, week, ALL_ROOMS)
+                available = ALL_ROOMS
+
+            new_sch = {"provider": provider, "day": day, "week": week,
+                       "rooms": available, **sol}
+            if _add_schedule(new_sch):
+                added_this += 1
+                total_added += 1
+
+        print(f"            Added {added_this} new columns "
+              f"(pool now: {len(schedules)}).")
+        if added_this == 0:
+            break
+
+    # ── Step 5: LP relaxation for lower bound ─────────────────────────────────
+    print(f"\n[CG Step 5] Solving LP relaxation ({len(schedules)} columns)...")
+    master_lp = build_master_problem(
+        schedules, appointments, integer=False, verbose=False,
+        hard_room_constraints=False,
     )
+    lp_bound = master_lp["total_cost"] if master_lp["feasible"] else None
+
+    # ── Step 6: Final ILP with hard room constraints ──────────────────────────
+    print(f"[CG Step 6] Solving ILP with hard room constraints...")
+    master_ilp = build_master_problem(
+        schedules, appointments, integer=True, verbose=False,
+        hard_room_constraints=True,
+    )
+    if not master_ilp["feasible"]:
+        print("            Hard-constraint ILP infeasible — retrying with soft constraints.")
+        master_ilp = build_master_problem(
+            schedules, appointments, integer=True, verbose=False,
+            hard_room_constraints=False,
+        )
     ilp_bound = master_ilp["total_cost"] if master_ilp["feasible"] else float("inf")
 
     gap_pct = None
-    if lp_bound is not None and ilp_bound not in (float("inf"), 0):
+    if lp_bound and ilp_bound not in (float("inf"), 0):
         gap_pct = abs(ilp_bound - lp_bound) / abs(ilp_bound) * 100
 
-    # ── Summary ───────────────────────────────────────────────────────────────
     print(f"\n{'═' * 62}")
     print(f"  COLUMN GENERATION RESULTS")
     print(f"{'─' * 62}")
-    print(f"  CG iterations performed  : {iteration}")
-    print(f"  New columns added        : {total_added}")
-    print(f"  Total columns in pool    : {len(schedules)}")
+    print(f"  Conflict-resolution iterations : {iteration}")
+    print(f"  New columns added              : {total_added}")
+    print(f"  Total columns in pool          : {len(schedules)}")
     if lp_bound is not None:
-        print(f"  LP lower bound  (z_LP)   : {lp_bound:.4f}")
-    print(f"  ILP upper bound (z_ILP)  : {ilp_bound:.4f}")
+        print(f"  LP lower bound  (z_LP)         : {lp_bound:.2f}")
+    print(f"  ILP upper bound (z_ILP)        : {ilp_bound:.2f}")
     if gap_pct is not None:
-        print(f"  Duality gap              : {gap_pct:.2f}%")
+        print(f"  Duality gap                    : {gap_pct:.2f}%")
     print(f"{'═' * 62}\n")
 
     return {

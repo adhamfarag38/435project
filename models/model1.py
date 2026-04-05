@@ -90,7 +90,7 @@ def solve_model1(
             mdl += x[a, r] <= y[r], f"link_{a}_{r}"
 
     # ── Solve ────────────────────────────────────────────────────────────────
-    solver = pulp.PULP_CBC_CMD(msg=1 if verbose else 0)
+    solver = pulp.PULP_CBC_CMD(msg=1 if verbose else 0, timeLimit=30)
     mdl.solve(solver)
 
     status = pulp.LpStatus[mdl.status]

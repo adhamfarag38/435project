@@ -25,7 +25,8 @@ def build_master_problem(
     schedules: list[dict],
     appointments: pd.DataFrame,
     integer: bool = True,
-    verbose: bool = False
+    verbose: bool = False,
+    hard_room_constraints: bool = False,
 ) -> dict:
     """
     Build and solve the Master Schedule Selection model.
@@ -76,9 +77,9 @@ def build_master_problem(
            for s in S}
 
     # ── Constraints ──────────────────────────────────────────────────────────
-    # (Objective is set after room slack variables are created below)
 
-    # 1. Appointment coverage: each appt covered exactly once
+    # 1. Appointment coverage: each appt covered EXACTLY once
+    #    Every appointment must appear in exactly one selected schedule.
     appt_constrs = {}
     for a in A_cover:
         covering = [s for s in S if a in feasible_schedules[s]["alpha"]]
@@ -89,40 +90,58 @@ def build_master_problem(
             )
             appt_constrs[a] = c
 
-    # 2. Room capacity: at most one provider per (room, time-slot, day)
-    # Soft constraint with penalty slack to ensure feasibility.
-    # In a full column-generation loop, new schedules would eliminate conflicts;
-    # here slacks catch residual cross-provider conflicts.
+    # 2. Room capacity: at most one schedule per (room, time-slot)
     all_rt = set()
     for sch in feasible_schedules:
         all_rt |= set(sch["beta"].keys())
 
-    ROOM_PENALTY = 1e4   # large penalty to discourage room conflicts
-    room_slack = {}
+    room_slack = {}   # kept for interface compatibility; empty when hard constraints used
     room_constrs = {}
-    for (r, t) in all_rt:
-        using = [s for s in S if (r, t) in feasible_schedules[s]["beta"]]
-        if len(using) > 1:
-            sl = pulp.LpVariable(f"slack_r_{r}_{t}", lowBound=0)
-            room_slack[(r, t)] = sl
-            c = mdl.addConstraint(
-                pulp.lpSum(lam[s] for s in using) - sl <= 1,
-                name=f"room_{r}_{t}"
-            )
-            room_constrs[(r, t)] = c
 
-    # Add slack penalty to objective
-    mdl += pulp.lpSum(feasible_schedules[s]["cost"] * lam[s] for s in S) + \
-           pulp.lpSum(ROOM_PENALTY * sl for sl in room_slack.values())
+    if hard_room_constraints:
+        # Hard constraint — guarantees no room conflicts in the final schedule
+        for (r, t) in all_rt:
+            using = [s for s in S if (r, t) in feasible_schedules[s]["beta"]]
+            if len(using) > 1:
+                c = mdl.addConstraint(
+                    pulp.lpSum(lam[s] for s in using) <= 1,
+                    name=f"room_{r}_{t}"
+                )
+                room_constrs[(r, t)] = c
+    else:
+        # Soft constraint with penalty slack (legacy behaviour)
+        ROOM_PENALTY = 1e4
+        for (r, t) in all_rt:
+            using = [s for s in S if (r, t) in feasible_schedules[s]["beta"]]
+            if len(using) > 1:
+                sl = pulp.LpVariable(f"slack_r_{r}_{t}", lowBound=0)
+                room_slack[(r, t)] = sl
+                c = mdl.addConstraint(
+                    pulp.lpSum(lam[s] for s in using) - sl <= 1,
+                    name=f"room_{r}_{t}"
+                )
+                room_constrs[(r, t)] = c
 
-    # 3. One schedule per (provider, day, week)
+    # Objective: minimise total switch/travel cost across selected schedules.
+    # Coverage is enforced by = 1 constraints, not by a reward term.
+    # Room penalty term is non-zero only when soft constraints are used (LP).
+    switch_travel_term = pulp.lpSum(
+        feasible_schedules[s]["cost"] * lam[s] for s in S
+    )
+    room_penalty_term = pulp.lpSum(
+        1e4 * sl for sl in room_slack.values()
+    )
+    mdl += switch_travel_term + room_penalty_term
+
+    # 3. EXACTLY one schedule per (provider, day, week)
+    #    Every provider-day must have exactly one schedule selected.
     for (prov, day, week), s_list in pd_groups.items():
         if len(s_list) > 0:
             tag = f"{prov}_{day}_W{week}".replace(" ", "_")
             mdl += pulp.lpSum(lam[s] for s in s_list) == 1, f"oneschedule_{tag}"
 
     # ── Solve ─────────────────────────────────────────────────────────────────
-    solver = pulp.PULP_CBC_CMD(msg=1 if verbose else 0, timeLimit=120)
+    solver = pulp.PULP_CBC_CMD(msg=1 if verbose else 0, timeLimit=300)
     mdl.solve(solver)
 
     status = pulp.LpStatus[mdl.status]
