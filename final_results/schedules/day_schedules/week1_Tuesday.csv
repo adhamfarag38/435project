@@ -1,0 +1,5 @@
+appt_id,patient_id,date,day_of_week,provider,start_min,duration_min,end_min,no_show,week,assigned_room_x,assigned_room_y,schedule_cost,num_switches,total_travel,assigned_room,policy
+318,Patient 376,11-11-2025,Tuesday,HPW114,670,5,675,False,1,ER15,ER15,31.0,2,11.0,ER1,F_admin_buffer
+319,Patient 378,11-11-2025,Tuesday,HPW114,945,15,960,False,1,ER15,ER15,31.0,2,11.0,ER1,F_admin_buffer
+320,Patient 379,11-11-2025,Tuesday,HPW114,655,5,660,False,1,ER3,ER3,31.0,2,11.0,ER1,F_admin_buffer
+321,Patient 380,11-11-2025,Tuesday,HPW114,660,5,665,False,1,ER16,ER16,31.0,2,11.0,ER1,F_admin_buffer

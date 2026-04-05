@@ -1,0 +1,7 @@
+Policy,Coverage (%),Rooms Used,Room Utilisation (%),Avg Switches/PD,Total Travel (m),Avg Travel/Switch (m),Provider Compactness (%),Peak Concurrent Rooms,Appointments Scheduled,Total Appointments
+A: Single Room,87.8,16,23.4,0.0,0.0,0.0,100.0,16,438,499
+B: Cluster,100.0,16,25.3,2.96,700.9,3.0,38.0,16,499,499
+C: Robust Buffer,100.0,16,25.3,3.73,870.3,2.95,26.6,16,499,499
+D: No-show Robust,100.0,16,25.3,3.52,875.2,3.15,32.9,16,499,499
+E: Day Blocking,87.8,16,23.4,2.96,578.3,2.83,31.9,16,438,499
+F: Admin Buffer,100.0,16,25.3,2.73,607.1,2.81,36.7,16,499,499

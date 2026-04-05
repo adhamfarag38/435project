@@ -223,6 +223,125 @@ def solve_model2_pricing(
     }
 
 
+# ─── Post-Processing: Room Conflict Resolution ───────────────────────────────
+
+def resolve_room_conflicts(
+    master_result: dict,
+    appointments: pd.DataFrame,
+    dist_matrix: pd.DataFrame,
+) -> dict:
+    """
+    Post-process Model 3's output to eliminate all room double-bookings.
+
+    Earlier appointments (by start_min) keep their assigned room.
+    Displaced appointments are reassigned to the nearest free room.
+
+    Returns an updated master_result with conflict-free assignments and
+    recomputed num_switches, total_travel, cost, and beta for each schedule.
+    """
+    from data_loader import ROOMS as ALL_ROOMS
+
+    selected = master_result.get("selected_schedules", [])
+    if not selected:
+        return master_result
+
+    appt_lookup = appointments.set_index("appt_id")
+
+    # Flatten all selected schedules into one sorted list — include day so
+    # occupancy is scoped per day (Monday ER5 ≠ Tuesday ER5).
+    rows = []
+    for sch in selected:
+        for appt_id, room in sch["assignment"].items():
+            appt_row = appt_lookup.loc[appt_id]
+            rows.append({
+                "appt_id":       appt_id,
+                "day":           sch["day"],
+                "week":          sch["week"],
+                "start_min":     int(appt_row["start_min"]),
+                "end_min":       int(appt_row["end_min"]),
+                "assigned_room": room,
+            })
+
+    df = pd.DataFrame(rows).sort_values(["day", "start_min"]).reset_index(drop=True)
+
+    # Occupancy keyed by (room, day, week) — rooms are independent across days.
+    occupancy: dict[tuple, list[tuple]] = {}
+    final_assignment: dict = {}
+
+    def is_free(room, day, week, start, end):
+        key = (room, day, week)
+        return all(end <= bs or start >= be for (bs, be, _) in occupancy.get(key, []))
+
+    for _, row in df.iterrows():
+        appt_id = row["appt_id"]
+        room    = row["assigned_room"]
+        day     = row["day"]
+        week    = row["week"]
+        start   = row["start_min"]
+        end     = row["end_min"]
+        key     = (room, day, week)
+
+        if is_free(room, day, week, start, end):
+            final_assignment[appt_id] = room
+            occupancy.setdefault(key, []).append((start, end, appt_id))
+        else:
+            # Nearest free room (by distance from originally assigned room)
+            sorted_rooms = sorted(
+                ALL_ROOMS,
+                key=lambda r: (
+                    dist_matrix.loc[room, r]
+                    if room in dist_matrix.index and r in dist_matrix.columns
+                    else float("inf")
+                ),
+            )
+            chosen = next(
+                (r for r in sorted_rooms if is_free(r, day, week, start, end)),
+                room,
+            )
+            final_assignment[appt_id] = chosen
+            occupancy.setdefault((chosen, day, week), []).append((start, end, appt_id))
+
+    # Rebuild each schedule with updated rooms + recomputed metrics
+    updated_schedules = []
+    for sch in selected:
+        new_assignment = {a: final_assignment[a]
+                         for a in sch["assignment"] if a in final_assignment}
+
+        appt_ids_sorted = sorted(
+            new_assignment.keys(),
+            key=lambda a: int(appt_lookup.loc[a, "start_min"]),
+        )
+
+        num_switches = 0
+        total_travel = 0.0
+        prev_room    = None
+        for a in appt_ids_sorted:
+            r = new_assignment[a]
+            if prev_room and r != prev_room:
+                num_switches += 1
+                if prev_room in dist_matrix.index and r in dist_matrix.columns:
+                    total_travel += dist_matrix.loc[prev_room, r]
+            prev_room = r
+
+        new_beta = {}
+        for a, r in new_assignment.items():
+            appt_row = appt_lookup.loc[a]
+            for t in range(int(appt_row["start_min"]), int(appt_row["end_min"])):
+                new_beta[(r, t)] = 1
+
+        updated_sch = dict(sch)
+        updated_sch["assignment"]   = new_assignment
+        updated_sch["num_switches"] = num_switches
+        updated_sch["total_travel"] = total_travel
+        updated_sch["cost"]         = GAMMA * num_switches + ETA * total_travel
+        updated_sch["beta"]         = new_beta
+        updated_schedules.append(updated_sch)
+
+    updated_result = dict(master_result)
+    updated_result["selected_schedules"] = updated_schedules
+    return updated_result
+
+
 # ─── Full Column Generation Loop ──────────────────────────────────────────────
 
 def run_column_generation(
@@ -459,6 +578,11 @@ def run_column_generation(
             hard_room_constraints=False,
         )
     ilp_bound = master_ilp["total_cost"] if master_ilp["feasible"] else float("inf")
+
+    # ── Step 7: Post-process — resolve remaining room conflicts ──────────────
+    if master_ilp["feasible"]:
+        print("[CG Step 7] Resolving room conflicts via post-processing...")
+        master_ilp = resolve_room_conflicts(master_ilp, appointments, dist_matrix)
 
     gap_pct = None
     if lp_bound and ilp_bound not in (float("inf"), 0):
